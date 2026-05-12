@@ -52,6 +52,17 @@ def create_app():
         model: str | None = None
 
     app = FastAPI(title="Auto Cut API", version="0.1.0")
+
+    # 业务自助成片路由（提案 0001 PR-1）。鉴权由路由内部 Depends(require_token) 负责，
+    # 启动时不强行校验 AUTOCUT_API_TOKEN，避免影响现有本地审核台启动。
+    # 首次访问业务路由若 token 未配置，会返回 500 server_misconfigured。
+    try:
+        from .business_api import router as business_router
+
+        app.include_router(business_router)
+    except RuntimeError:  # API extras 缺失时跳过，保持现状路由可用
+        pass
+
     project_root = Path(os.environ.get("AUTOCUT_ROOT", Path.cwd())).resolve()
     runs_root = Path(os.environ.get("AUTOCUT_RUNS_DIR", project_root / "data" / "runs")).resolve()
     static_root = Path(__file__).resolve().parent / "static"
