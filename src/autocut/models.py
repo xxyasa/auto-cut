@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 
 def to_plain_dict(value: Any) -> Any:
@@ -97,6 +97,8 @@ class PipelineRequest:
     export_compact: bool = True
     compact_padding: float = 0.08
     compact_merge_gap: float = 0.45
+    # 进度回调：on_progress(stage: str, progress: float 0~1)
+    on_progress: Callable[[str, float], None] | None = None
 
 
 @dataclass
