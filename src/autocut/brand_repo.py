@@ -370,9 +370,47 @@ def suggest_associations(
     product_name: str,
     selling_points: list[str],
 ) -> list[str]:
-    """调用 LLM 推荐联想词。PR-2 接入真实 LLM，本 PR 仅提供骨架与异常类型。
+    """调用 LLM 推荐联想词。
+
+    Args:
+        brand_name: 品牌名（必填非空）。
+        product_name: 产品名（必填非空）。
+        selling_points: 卖点列表，可空。
+
+    Returns:
+        去重保序的联想词列表，长度不限（业务侧自行截断）。
 
     Raises:
-        LLMUnavailable: LLM 配置缺失或调用失败，路由侧应转 502。
+        BrandRepoError: 入参非法（空品牌/产品）。
+        LLMUnavailable: AUTOCUT_LLM_API_KEY 缺失或 LLM 调用失败 / 返回 JSON 不合法 / suggestions 字段缺失。
     """
-    raise LLMUnavailable("suggest_associations not yet implemented (PR-2)")
+    brand_name = (brand_name or "").strip()
+    product_name = (product_name or "").strip()
+    if not brand_name:
+        raise BrandRepoError("brand_name_required")
+    if not product_name:
+        raise BrandRepoError("product_name_required")
+
+    # 延迟导入避免循环依赖
+    from . import llm as llm_mod
+
+    sp_lines = "\n".join(f"- {sp}" for sp in selling_points if sp) or "（无）"
+    prompt = (
+        "你是直播带货 ASR 联想词专家，目的是为下面的品牌+产品生成有助于语音识别的联想词。\n"
+        "联想词包含：品牌别名、IP/角色名、材质名、卖点关键短语等。\n"
+        "请只返回 JSON：{\"suggestions\": [\"词1\", \"词2\", ...]}，不要解释。\n\n"
+        f"品牌：{brand_name}\n"
+        f"产品：{product_name}\n"
+        f"卖点：\n{sp_lines}\n"
+    )
+    try:
+        content = llm_mod.chat_completion(prompt)
+        parsed = llm_mod.parse_model_json(content)
+    except llm_mod.LLMError as exc:
+        raise LLMUnavailable(f"llm_failed: {exc}") from exc
+
+    raw = parsed.get("suggestions")
+    if not isinstance(raw, list):
+        raise LLMUnavailable("llm_response_missing_suggestions")
+    items = [str(item).strip() for item in raw if str(item).strip()]
+    return _dedupe_keep_order(items)

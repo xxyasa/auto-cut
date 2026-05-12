@@ -237,10 +237,46 @@ class ConcurrencyTests(_RepoTestBase):
         self.assertEqual(len(conflicts), 9)
 
 
-class SuggestAssociationsSkeletonTests(_RepoTestBase):
-    def test_pr1_skeleton_raises_llm_unavailable(self):
-        with self.assertRaises(brand_repo.LLMUnavailable):
-            brand_repo.suggest_associations("brand", "product", [])
+class SuggestAssociationsTests(_RepoTestBase):
+    def test_input_validation(self):
+        with self.assertRaises(brand_repo.BrandRepoError):
+            brand_repo.suggest_associations("", "product", [])
+        with self.assertRaises(brand_repo.BrandRepoError):
+            brand_repo.suggest_associations("brand", "  ", [])
+
+    def test_success_returns_dedup_keep_order(self):
+        from autocut import llm as llm_mod
+
+        fake_content = '{"suggestions": ["哈利波特", "魔杖", "哈利波特", "格兰芬多"]}'
+        with patch.object(llm_mod, "chat_completion", return_value=fake_content):
+            out = brand_repo.suggest_associations(
+                "Pinkypinky", "口红", ["持久", "不沾杯"]
+            )
+        self.assertEqual(out, ["哈利波特", "魔杖", "格兰芬多"])
+
+    def test_llm_error_translated_to_unavailable(self):
+        from autocut import llm as llm_mod
+
+        def boom(_prompt):
+            raise llm_mod.LLMError("api key missing")
+
+        with patch.object(llm_mod, "chat_completion", side_effect=boom):
+            with self.assertRaises(brand_repo.LLMUnavailable):
+                brand_repo.suggest_associations("brand", "product", [])
+
+    def test_missing_suggestions_field(self):
+        from autocut import llm as llm_mod
+
+        with patch.object(llm_mod, "chat_completion", return_value='{"foo": []}'):
+            with self.assertRaises(brand_repo.LLMUnavailable):
+                brand_repo.suggest_associations("brand", "product", [])
+
+    def test_invalid_json(self):
+        from autocut import llm as llm_mod
+
+        with patch.object(llm_mod, "chat_completion", return_value="not json at all"):
+            with self.assertRaises(brand_repo.LLMUnavailable):
+                brand_repo.suggest_associations("brand", "product", [])
 
 
 if __name__ == "__main__":
