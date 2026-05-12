@@ -5,12 +5,14 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auto Cut · 自助成片</title>
     <link href="/business.css" rel="stylesheet">
+    <link href="/combobox.css" rel="stylesheet">
     <script>
         // Prevent dark mode flash
         const savedTheme = localStorage.getItem('autocut_theme') || 
             (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         document.documentElement.setAttribute('data-theme', savedTheme);
     </script>
+    <script src="/combobox.js" defer></script>
     <script src="/business.js" defer></script>
 </head>
 <body>
@@ -39,12 +41,13 @@
 
                     <div id="brand-mode-wrap">
                         <div class="flex gap-2">
-                            <select id="brand-select"><option value="">-- 选择品牌 --</option></select>
+                            <div class="combobox" id="brand-combobox" style="flex:1;"></div>
                             <button type="button" id="btn-new-brand" class="btn btn-secondary btn-sm">新建</button>
                         </div>
                         <div class="flex gap-2 mt-2">
-                            <select id="product-select" disabled><option value="">-- 选择产品 --</option></select>
+                            <div class="combobox" id="product-combobox" style="flex:1;"></div>
                             <button type="button" id="btn-new-product" class="btn btn-secondary btn-sm" disabled>新建</button>
+                            <button type="button" id="btn-del-product" class="btn btn-danger btn-sm" disabled>删除</button>
                         </div>
                     </div>
 
@@ -59,10 +62,11 @@
 
                 <!-- 联想词 -->
                 <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
-                    <label>专属词汇 (可补全识别)</label>
+                    <label>品牌专属词汇</label>
                     <div class="flex gap-2 mb-2">
-                        <input type="text" id="assoc-input" placeholder="输入专属词按回车添加">
-                        <button type="button" id="btn-suggest" class="btn btn-secondary btn-sm">LLM建议</button>
+                        <input type="text" id="assoc-input" placeholder="输入品牌专属词按回车添加">
+                        <button type="button" id="btn-suggest" class="btn btn-secondary btn-sm">AI建议</button>
+                        <button type="button" id="btn-suggest-all" class="btn btn-secondary btn-sm" hidden>全选</button>
                     </div>
                     <div id="assoc-chips" class="chip-container"></div>
                     <div id="suggest-chips" class="chip-container mt-2"></div>
@@ -71,7 +75,7 @@
                 <!-- 视频源 -->
                 <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
                     <label>视频源</label>
-                    <div class="tabs mt-2">
+                    <div class="tabs mt-2" id="source-tabs">
                         <div class="tab active" data-tab="upload">本地上传</div>
                         <div class="tab" data-tab="oss">OSS 链接</div>
                         <div class="tab" data-tab="url">直链 URL</div>
@@ -79,10 +83,11 @@
                     
                     <div id="source-upload" class="tab-content">
                         <div class="upload-zone" id="upload-zone">
-                            <p>点击或拖拽 mp4 文件至此处</p>
+                            <p>点击或拖拽 mp4 文件至此处（支持多选）</p>
                             <p class="text-sm text-muted mt-2" id="upload-status"></p>
-                            <input type="file" id="file-input" accept="video/mp4" class="hidden">
+                            <input type="file" id="file-input" accept="video/mp4" class="hidden" multiple>
                         </div>
+                        <div id="batch-file-list" class="mt-2 hidden"></div>
                     </div>
                     <div id="source-oss" class="tab-content hidden">
                         <input type="text" id="oss-input" placeholder="oss://bucket/path/to/video.mp4">
@@ -114,11 +119,7 @@
                     <details>
                         <summary class="text-sm font-medium text-muted cursor-pointer" style="cursor: pointer;">高级 ASR 设置</summary>
                         <div class="mt-2">
-                            <select id="asr-engine">
-                                <option value="transcript">transcript (默认)</option>
-                                <option value="faster-whisper">faster-whisper</option>
-                                <option value="funasr">funasr</option>
-                            </select>
+                            <div class="combobox" id="asr-engine-combobox"></div>
                             <div id="transcript-path-wrap" class="mt-2">
                                 <input type="text" id="transcript-path" placeholder="预提取 transcript JSON 路径 (可选)">
                             </div>
@@ -161,7 +162,7 @@
                 <div class="text-sm text-muted mb-2">状态: <span id="detail-stage"></span></div>
                 <div class="progress-bar mb-4"><div class="progress-fill" id="detail-progress" style="width: 0%"></div></div>
 
-                <div class="tabs">
+                <div class="tabs" id="detail-tabs">
                     <div class="tab active" data-detail-tab="log">日志</div>
                     <div class="tab" data-detail-tab="enabled">Enabled 轨道</div>
                     <div class="tab" data-detail-tab="remix">Remix 轨道</div>
@@ -203,9 +204,30 @@
         <div class="modal">
             <div class="card-title">新建产品</div>
             <input type="text" id="new-product-name" placeholder="产品名称">
+            <div class="mt-2">
+                <label class="text-sm text-muted">卖点（回车添加）</label>
+                <input type="text" id="new-product-selling-point-input" placeholder="输入卖点按回车添加">
+                <div id="new-product-selling-points-chips" class="chip-container"></div>
+            </div>
+            <div class="mt-2">
+                <label class="text-sm text-muted">联想词（回车添加）</label>
+                <input type="text" id="new-product-assoc-input" placeholder="输入联想词按回车添加">
+                <div id="new-product-assoc-chips" class="chip-container"></div>
+            </div>
             <div class="modal-footer">
                 <button type="button" class="btn btn-secondary" onclick="closeModal('modal-product')">取消</button>
                 <button type="button" class="btn btn-primary" id="submit-new-product">确认</button>
+            </div>
+        </div>
+    </div>
+    <!-- Modal for confirm delete product -->
+    <div id="modal-confirm-delete" class="modal-overlay">
+        <div class="modal">
+            <div class="card-title">确认删除</div>
+            <p id="modal-confirm-delete-msg" class="text-sm mt-2"></p>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modal-confirm-delete')">取消</button>
+                <button type="button" class="btn btn-danger" id="modal-confirm-delete-ok">确认删除</button>
             </div>
         </div>
     </div>

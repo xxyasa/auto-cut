@@ -11,7 +11,17 @@ const STATE = {
   currentJobId: null,
   brands: [],
   products: [],
-  uploadedFile: null,
+  uploadedFile: null,     // 单文件兼容（非 upload tab 用）
+  uploadedFiles: [],      // 批量上传文件列表
+  // 上一次成功渲染的任务列表签名，用于跳过无变化的 DOM 重建（性能优化）
+  lastJobsSignature: '',
+  // Combobox 实例（init() 阶段创建）
+  brandCombo: null,
+  productCombo: null,
+  asrCombo: null,
+  // 当前选中的品牌/产品 id（用于联想词即时 PATCH）
+  currentBrandId: null,
+  currentProductId: null,
 };
 
 // ==========================================
@@ -71,8 +81,25 @@ const utils = {
   },
   
   formatDate(ts) {
-    if (!ts) return '-';
-    return new Date(ts * 1000).toLocaleString('zh-CN', {
+    if (ts === null || ts === undefined || ts === '') return '-';
+    let d;
+    if (typeof ts === 'number') {
+      // 兼容：秒级 (10 位) 或 毫秒级 (13 位)
+      d = new Date(ts < 1e12 ? ts * 1000 : ts);
+    } else if (typeof ts === 'string') {
+      // 纯数字字符串
+      if (/^\d+$/.test(ts)) {
+        const n = Number(ts);
+        d = new Date(n < 1e12 ? n * 1000 : n);
+      } else {
+        // ISO 字符串 (后端 _now_iso 输出)
+        d = new Date(ts);
+      }
+    } else {
+      d = new Date(ts);
+    }
+    if (isNaN(d.getTime())) return '-';
+    return d.toLocaleString('zh-CN', {
       month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit'
     });
   },
@@ -80,6 +107,24 @@ const utils = {
   getFilename(path) {
     if (!path) return '';
     return path.split(/[/\\]/).pop();
+  },
+
+  // 把时间戳格式化为任务名称：YYYYMMDD-HHmmss-任务-seq
+  formatTaskName(ts, seq) {
+    if (!ts) return `任务-${seq}`;
+    let d;
+    if (typeof ts === 'number') {
+      d = new Date(ts < 1e12 ? ts * 1000 : ts);
+    } else if (typeof ts === 'string') {
+      d = /^\d+$/.test(ts) ? new Date(Number(ts) < 1e12 ? Number(ts) * 1000 : Number(ts)) : new Date(ts);
+    } else {
+      d = new Date(ts);
+    }
+    if (isNaN(d.getTime())) return `任务-${seq}`;
+    const pad = n => String(n).padStart(2, '0');
+    const date = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
+    const time = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
+    return `${date}-${time}-任务-${seq}`;
   }
 };
 
@@ -101,13 +146,25 @@ const ui = {
   },
   
   switchTab(tabGroupSelector, targetTab, contentPrefix) {
-    const tabs = document.querySelectorAll(`${tabGroupSelector} .tab`);
+    const root = document.querySelector(tabGroupSelector);
+    if (!root) return;
+    const attr = contentPrefix.includes('detail') ? 'data-detail-tab' : 'data-tab';
+    const tabs = root.querySelectorAll('.tab');
     tabs.forEach(t => t.classList.remove('active'));
-    document.querySelector(`${tabGroupSelector} .tab[data-${tabGroupSelector.includes('detail') ? 'detail-' : ''}tab="${targetTab}"]`).classList.add('active');
-    
-    document.querySelectorAll(`[id^="${contentPrefix}"]`).forEach(el => el.classList.add('hidden'));
-    document.getElementById(`${contentPrefix}${targetTab}`).classList.remove('hidden');
-    document.getElementById(`${contentPrefix}${targetTab}`).classList.add('flex');
+    const targetEl = root.querySelector(`.tab[${attr}="${targetTab}"]`);
+    if (targetEl) targetEl.classList.add('active');
+
+    // 只切换"内容容器"，不要把 tab 栏自身（.tabs）也隐藏。
+    document.querySelectorAll(`[id^="${contentPrefix}"]`).forEach(el => {
+      if (el.classList.contains('tabs')) return; // 跳过 tab 栏本身（如 #source-tabs / #detail-tabs）
+      el.classList.add('hidden');
+      el.classList.remove('flex');
+    });
+    const content = document.getElementById(`${contentPrefix}${targetTab}`);
+    if (content) {
+      content.classList.remove('hidden');
+      content.classList.add('flex');
+    }
   },
   
   showModal(id) {
@@ -164,6 +221,10 @@ window.closeModal = ui.hideModal;
 const formState = {
   sellingPoints: [],
   assocWords: [],
+
+  // 新建产品 modal 临时状态
+  newProductSellingPoints: [],
+  newProductAssocs: [],
   
   addSellingPoint(val) {
     if (!val || this.sellingPoints.includes(val)) return;
@@ -180,7 +241,42 @@ const formState = {
     ui.renderChips('assoc-chips', this.assocWords, i => {
       this.assocWords.splice(i, 1);
       ui.renderChips('assoc-chips', this.assocWords, this.assocWords);
+      apiOps.saveAssocDebounced();
     });
+    apiOps.saveAssocDebounced();
+  },
+
+  addNewProductSellingPoint(val) {
+    if (!val || this.newProductSellingPoints.includes(val)) return;
+    this.newProductSellingPoints.push(val);
+    ui.renderChips('new-product-selling-points-chips', this.newProductSellingPoints, i => {
+      this.newProductSellingPoints.splice(i, 1);
+      ui.renderChips('new-product-selling-points-chips', this.newProductSellingPoints, this.newProductSellingPoints);
+    });
+  },
+
+  addNewProductAssoc(val) {
+    if (!val || this.newProductAssocs.includes(val)) return;
+    this.newProductAssocs.push(val);
+    ui.renderChips('new-product-assoc-chips', this.newProductAssocs, i => {
+      this.newProductAssocs.splice(i, 1);
+      ui.renderChips('new-product-assoc-chips', this.newProductAssocs, this.newProductAssocs);
+    });
+  },
+
+  resetNewProduct() {
+    this.newProductSellingPoints = [];
+    this.newProductAssocs = [];
+    const spChips = document.getElementById('new-product-selling-points-chips');
+    const asChips = document.getElementById('new-product-assoc-chips');
+    if (spChips) spChips.innerHTML = '';
+    if (asChips) asChips.innerHTML = '';
+    const nameInput = document.getElementById('new-product-name');
+    const spInput = document.getElementById('new-product-selling-point-input');
+    const asInput = document.getElementById('new-product-assoc-input');
+    if (nameInput) nameInput.value = '';
+    if (spInput) spInput.value = '';
+    if (asInput) asInput.value = '';
   }
 };
 
@@ -192,19 +288,22 @@ const apiOps = {
     const res = await utils.fetchApi('/brands');
     if (!res) return;
     STATE.brands = res.brands || [];
-    
-    const sel = document.getElementById('brand-select');
-    sel.innerHTML = '<option value="">-- 选择品牌 --</option>';
-    STATE.brands.forEach(b => {
-      const opt = document.createElement('option');
-      opt.value = b.id;
-      opt.textContent = b.name;
-      sel.appendChild(opt);
-    });
-    
-    document.getElementById('product-select').innerHTML = '<option value="">-- 选择产品 --</option>';
-    document.getElementById('product-select').disabled = true;
+
+    if (STATE.brandCombo) {
+      STATE.brandCombo.setOptions(STATE.brands.map(b => ({ value: b.id, label: b.name })));
+    }
+    if (STATE.productCombo) {
+      STATE.productCombo.setOptions([]);
+      STATE.productCombo.setDisabled(true);
+    }
     document.getElementById('btn-new-product').disabled = true;
+    document.getElementById('btn-del-product').disabled = true;
+
+    // 默认选中第一个品牌（如果存在），并联动加载产品列表
+    if (STATE.brands.length > 0 && STATE.brandCombo) {
+      STATE.brandCombo.setValue(STATE.brands[0].id);
+      await this.loadProducts(STATE.brands[0].id);
+    }
   },
   
   async loadProducts(brandId) {
@@ -212,17 +311,20 @@ const apiOps = {
     const res = await utils.fetchApi(`/brands/${brandId}/products`);
     if (!res) return;
     STATE.products = res.products || [];
-    
-    const sel = document.getElementById('product-select');
-    sel.innerHTML = '<option value="">-- 选择产品 --</option>';
-    STATE.products.forEach(p => {
-      const opt = document.createElement('option');
-      opt.value = p.id;
-      opt.textContent = p.name;
-      sel.appendChild(opt);
-    });
-    sel.disabled = false;
+
+    if (STATE.productCombo) {
+      STATE.productCombo.setOptions(STATE.products.map(p => ({ value: p.id, label: p.name })));
+      STATE.productCombo.setDisabled(STATE.products.length === 0);
+    }
+    const hasProducts = STATE.products.length > 0;
     document.getElementById('btn-new-product').disabled = false;
+    document.getElementById('btn-del-product').disabled = !hasProducts;
+
+    // 默认选中第一个产品，并把卖点/联想词回填到表单
+    if (hasProducts && STATE.productCombo) {
+      STATE.productCombo.setValue(STATE.products[0].id);
+      this.loadProductDetails(STATE.products[0]);
+    }
   },
   
   async createBrand(name) {
@@ -234,47 +336,102 @@ const apiOps = {
       ui.toast('品牌创建成功', 'success');
       ui.hideModal('modal-brand');
       await this.loadBrands();
-      document.getElementById('brand-select').value = res.id;
+      if (STATE.brandCombo) STATE.brandCombo.setValue(res.id);
       await this.loadProducts(res.id);
     }
   },
   
-  async createProduct(brandId, name) {
+  async createProduct(brandId, name, sellingPoints = [], associations = []) {
     const res = await utils.fetchApi(`/brands/${brandId}/products`, {
       method: 'POST',
-      body: { name, selling_points: [], associations: [] }
+      body: {
+        name,
+        selling_points: sellingPoints,
+        associations,
+      }
     });
     if (res) {
       ui.toast('产品创建成功', 'success');
       ui.hideModal('modal-product');
       await this.loadProducts(brandId);
-      document.getElementById('product-select').value = res.id;
+      if (STATE.productCombo) STATE.productCombo.setValue(res.id);
       this.loadProductDetails(res);
     }
   },
   
   loadProductDetails(product) {
     if (!product) return;
+    // 记录当前产品，用于即时 PATCH 保存联想词
+    STATE.currentBrandId = STATE.brandCombo ? STATE.brandCombo.getValue() : null;
+    STATE.currentProductId = product.id || null;
     formState.sellingPoints = [...(product.selling_points || [])];
     formState.assocWords = [...(product.associations || [])];
     ui.renderChips('assoc-chips', formState.assocWords, i => {
       formState.assocWords.splice(i, 1);
       ui.renderChips('assoc-chips', formState.assocWords, formState.assocWords);
+      apiOps.saveAssocDebounced();
     });
+  },
+
+  // 500ms debounce，防止快速多次修改时频繁请求
+  _saveAssocTimer: null,
+  saveAssocDebounced() {
+    clearTimeout(this._saveAssocTimer);
+    this._saveAssocTimer = setTimeout(() => this.saveAssoc(), 500);
+  },
+
+  async saveAssoc() {
+    if (!STATE.currentBrandId || !STATE.currentProductId) return;
+    await utils.fetchApi(
+      `/brands/${STATE.currentBrandId}/products/${STATE.currentProductId}`,
+      { method: 'PATCH', body: { associations: [...formState.assocWords] } }
+    );
+  },
+
+  async deleteProduct() {
+    const brandId = (STATE.brandCombo ? STATE.brandCombo.getValue() : null) || STATE.currentBrandId;
+    const productId = (STATE.productCombo ? STATE.productCombo.getValue() : null) || STATE.currentProductId;
+    if (!brandId || !productId) return ui.toast('请先选择产品', 'error');
+    const product = STATE.products.find(p => p.id === productId);
+    const name = product ? product.name : productId;
+
+    // 用自定义 modal 二次确认，避免浏览器原生 confirm 弹窗
+    document.getElementById('modal-confirm-delete-msg').textContent = `确认删除产品「${name}」？此操作不可撤销。`;
+    ui.showModal('modal-confirm-delete');
+
+    // 绑定一次性确认按钮（先移除旧的，避免多次绑定）
+    const okBtn = document.getElementById('modal-confirm-delete-ok');
+    const cancelBtns = document.querySelectorAll('#modal-confirm-delete .btn-secondary');
+    if (okBtn._deleteHandler) okBtn.removeEventListener('click', okBtn._deleteHandler);
+
+    const onConfirm = async () => {
+      okBtn.removeEventListener('click', onConfirm);
+      okBtn._deleteHandler = null;
+      ui.hideModal('modal-confirm-delete');
+      const res = await utils.fetchApi(`/brands/${brandId}/products/${productId}`, { method: 'DELETE' });
+      if (res !== null) {
+        ui.toast('产品已删除', 'success');
+        STATE.currentProductId = null;
+        STATE.currentBrandId = brandId;
+        await this.loadProducts(brandId);
+      }
+    };
+    okBtn._deleteHandler = onConfirm;
+    okBtn.addEventListener('click', onConfirm);
   },
   
   async uploadFile(file) {
     const fd = new FormData();
     fd.append('file', file);
-    
+
     const statusEl = document.getElementById('upload-status');
     statusEl.textContent = '上传中...';
-    
+
     const res = await utils.fetchApi('/upload', {
       method: 'POST',
       body: fd
     });
-    
+
     if (res) {
       STATE.uploadedFile = res;
       statusEl.textContent = `${res.filename} (已上传)`;
@@ -282,6 +439,47 @@ const apiOps = {
     } else {
       statusEl.textContent = '上传失败';
     }
+    return res;
+  },
+
+  // 批量上传多个文件，渲染 batch-file-list
+  async uploadFiles(files) {
+    STATE.uploadedFiles = [];
+    const statusEl = document.getElementById('upload-status');
+    const listEl = document.getElementById('batch-file-list');
+
+    if (files.length === 1) {
+      // 单文件走原逻辑
+      listEl.classList.add('hidden');
+      await this.uploadFile(files[0]);
+      return;
+    }
+
+    // 多文件
+    statusEl.textContent = `已选择 ${files.length} 个文件，上传中...`;
+    listEl.classList.remove('hidden');
+    listEl.innerHTML = '';
+    document.getElementById('upload-zone').style.borderColor = '';
+
+    for (const file of files) {
+      const item = document.createElement('div');
+      item.className = 'batch-file-item';
+      item.textContent = `${file.name} 上传中...`;
+      listEl.appendChild(item);
+
+      const fd = new FormData();
+      fd.append('file', file);
+      const res = await utils.fetchApi('/upload', { method: 'POST', body: fd });
+      if (res) {
+        STATE.uploadedFiles.push(res);
+        item.textContent = `✓ ${file.name}`;
+        item.classList.add('done');
+      } else {
+        item.textContent = `✗ ${file.name} 上传失败`;
+        item.classList.add('error');
+      }
+    }
+    statusEl.textContent = `${STATE.uploadedFiles.length}/${files.length} 个文件上传完成`;
   },
   
   async suggestAssoc() {
@@ -289,8 +487,8 @@ const apiOps = {
     let payload = null;
     
     if (mode === 'brand') {
-      const brandId = document.getElementById('brand-select').value;
-      const productId = document.getElementById('product-select').value;
+      const brandId = STATE.brandCombo ? STATE.brandCombo.getValue() : null;
+      const productId = STATE.productCombo ? STATE.productCombo.getValue() : null;
       if (!brandId) return ui.toast('请先选择品牌');
       payload = { brand_id: brandId };
       if (productId) payload.product_id = productId;
@@ -316,7 +514,7 @@ const apiOps = {
       }
     }
     
-    const brandIdStr = mode === 'brand' ? document.getElementById('brand-select').value : 'temp';
+    const brandIdStr = mode === 'brand' ? (STATE.brandCombo ? STATE.brandCombo.getValue() : null) : 'temp';
     const postUrl = mode === 'brand' ? `/brands/${brandIdStr}/suggest-associations` : `/brands/temp/suggest-associations`;
     
     // 补齐字段
@@ -334,11 +532,16 @@ const apiOps = {
       const news = res.suggestions.filter(s => !formState.assocWords.includes(s));
       ui.renderSuggestedChips('suggest-chips', news, (item) => {
         formState.addAssoc(item);
-        // hide the suggested chip once added
+        // 移除已添加的 chip
         const chips = Array.from(document.getElementById('suggest-chips').children);
         const target = chips.find(el => el.textContent === `+ ${item}`);
         if (target) target.remove();
+        // 若建议词全部添加完，隐藏全选按钮
+        if (document.getElementById('suggest-chips').childElementCount === 0) {
+          document.getElementById('btn-suggest-all').hidden = true;
+        }
       });
+      document.getElementById('btn-suggest-all').hidden = news.length === 0;
     }
   },
   
@@ -350,18 +553,17 @@ const apiOps = {
       },
       tracks: [],
       remix: {},
-      asr_engine: document.getElementById('asr-engine').value
+      asr_engine: STATE.asrCombo ? STATE.asrCombo.getValue() : 'transcript'
     };
     
     // Source
     const activeSourceTab = document.querySelector('.tabs [data-tab].active').dataset.tab;
     if (activeSourceTab === 'upload') {
-      if (!STATE.uploadedFile) return ui.toast('请先上传视频', 'error');
-      payload.source = {
-        type: 'upload',
-        value: STATE.uploadedFile.filename,
-        uploaded_path: STATE.uploadedFile.uploaded_path
-      };
+      // 先占位，后面批量时会替换
+      if (!STATE.uploadedFile && STATE.uploadedFiles.length === 0) return ui.toast('请先上传视频', 'error');
+      payload.source = STATE.uploadedFile
+        ? { type: 'upload', value: STATE.uploadedFile.filename, uploaded_path: STATE.uploadedFile.uploaded_path }
+        : { type: 'upload', value: STATE.uploadedFiles[0].filename, uploaded_path: STATE.uploadedFiles[0].uploaded_path };
     } else if (activeSourceTab === 'oss') {
       const v = document.getElementById('oss-input').value;
       if (!v) return ui.toast('请填写 OSS 链接', 'error');
@@ -375,8 +577,8 @@ const apiOps = {
     // Brand Product
     const mode = document.querySelector('input[name="product-mode"]:checked').value;
     if (mode === 'brand') {
-      payload.brand_product.brand_id = document.getElementById('brand-select').value;
-      payload.brand_product.product_id = document.getElementById('product-select').value;
+      payload.brand_product.brand_id = STATE.brandCombo ? STATE.brandCombo.getValue() : null;
+      payload.brand_product.product_id = STATE.productCombo ? STATE.productCombo.getValue() : null;
       if (!payload.brand_product.brand_id) return ui.toast('请选择品牌', 'error');
     } else {
       payload.brand_product.product = document.getElementById('temp-product-name').value;
@@ -404,6 +606,26 @@ const apiOps = {
       if (tp) payload.transcript_path = tp;
     }
     
+    // 提交：多文件时批量创建
+    if (activeSourceTab === 'upload' && STATE.uploadedFiles.length > 1) {
+      let created = 0;
+      for (const uploaded of STATE.uploadedFiles) {
+        const batchPayload = JSON.parse(JSON.stringify(payload));
+        batchPayload.source = {
+          type: 'upload',
+          value: uploaded.filename,
+          uploaded_path: uploaded.uploaded_path
+        };
+        const r = await utils.fetchApi('/jobs', { method: 'POST', body: batchPayload });
+        if (r) created++;
+      }
+      if (created > 0) {
+        ui.toast(`已创建 ${created} 个任务`, 'success');
+        this.pollJobs();
+      }
+      return;
+    }
+
     const res = await utils.fetchApi('/jobs', {
       method: 'POST',
       body: payload
@@ -423,33 +645,51 @@ const apiOps = {
     const emptyState = document.getElementById('empty-state');
     
     if (res.jobs.length === 0) {
-      container.innerHTML = '';
+      if (container.childElementCount > 0) container.innerHTML = '';
       emptyState.classList.remove('hidden');
+      STATE.lastJobsSignature = '';
       return;
     }
     
     emptyState.classList.add('hidden');
-    container.innerHTML = '';
-    
-    res.jobs.forEach(job => {
-      const el = document.createElement('div');
-      el.className = 'job-item';
-      el.onclick = () => showJobDetail(job.id);
-      
-      const shortId = job.id.split('-')[0] || job.id;
-      
-      el.innerHTML = `
-        <div class="job-info">
-          <div class="job-id">${shortId}</div>
-          <div class="job-meta">
-            <span>${utils.formatDate(job.queued_at || job.updated_at)}</span>
-            <span>${job.stage || '-'}</span>
+
+    // 计算签名：仅包含影响渲染的字段。若与上一次一致，跳过 DOM 重建，
+    // 避免每次 5s 轮询打断用户交互（例如打开中的 <select> 下拉）。
+    const signature = res.jobs
+      .map(j => `${j.id}|${j.status}|${j.stage || ''}|${j.progress || 0}|${j.queued_at || ''}|${j.updated_at || ''}`)
+      .join(';');
+    if (signature !== STATE.lastJobsSignature) {
+      const totalJobs = res.jobs.length;
+      const frag = document.createDocumentFragment();
+      res.jobs.forEach((job, idx) => {
+        const el = document.createElement('div');
+        el.className = 'job-item';
+        el.onclick = () => showJobDetail(job.id);
+
+        // 任务名称：YYYYMMDD-HHmmss-任务-序号（最旧的是001）
+        const seq = String(totalJobs - idx).padStart(3, '0');
+        const taskName = utils.formatTaskName(job.queued_at || job.updated_at, seq);
+
+        el.innerHTML = `
+          <div class="job-info">
+            <div class="job-id">${taskName}</div>
+            <div class="job-meta">
+              <span>${utils.formatDate(job.queued_at || job.updated_at)}</span>
+              <span>${job.stage || '-'}</span>
+            </div>
+            ${job.status === 'running' || job.status === 'downloading' ? `
+            <div class="job-progress-bar">
+              <div class="job-progress-fill" style="width:${Math.round((job.progress || 0) * 100)}%"></div>
+            </div>` : ''}
           </div>
-        </div>
-        <div class="badge ${job.status}">${job.status}</div>
-      `;
-      container.appendChild(el);
-    });
+          <div class="badge ${job.status}">${job.status}</div>
+        `;
+        frag.appendChild(el);
+      });
+      // 一次性 replace，比 innerHTML='' + 多次 appendChild 更平滑
+      container.replaceChildren(frag);
+      STATE.lastJobsSignature = signature;
+    }
     
     // refresh detail if opened
     if (STATE.currentJobId) {
@@ -478,7 +718,7 @@ function showJobDetail(id) {
   document.getElementById('view-detail').classList.remove('hidden');
   document.getElementById('view-detail').classList.add('flex');
   
-  ui.switchTab('.tabs', 'log', 'detail-');
+  ui.switchTab('#detail-tabs', 'log', 'detail-');
   
   // immediate fetch
   fetchJobDetailOnce(id);
@@ -582,21 +822,18 @@ function bindEvents() {
     });
   });
   
-  // Brand & Product selection
-  document.getElementById('brand-select').addEventListener('change', e => {
-    apiOps.loadProducts(e.target.value);
-  });
-  
-  document.getElementById('product-select').addEventListener('change', e => {
-    const p = STATE.products.find(x => x.id === e.target.value);
-    if (p) apiOps.loadProductDetails(p);
-  });
+  // Brand & Product selection - 已在 init() 阶段通过 Combobox onChange 绑定
   
   // Modals
   document.getElementById('btn-new-brand').addEventListener('click', () => ui.showModal('modal-brand'));
   document.getElementById('btn-new-product').addEventListener('click', () => {
-    if (!document.getElementById('brand-select').value) return ui.toast('请先选择品牌', 'error');
+    if (!STATE.brandCombo || !STATE.brandCombo.getValue()) return ui.toast('请先选择品牌', 'error');
+    formState.resetNewProduct();
     ui.showModal('modal-product');
+  });
+
+  document.getElementById('btn-del-product').addEventListener('click', () => {
+    apiOps.deleteProduct();
   });
   
   document.getElementById('submit-new-brand').addEventListener('click', () => {
@@ -604,9 +841,38 @@ function bindEvents() {
   });
   
   document.getElementById('submit-new-product').addEventListener('click', () => {
-    const b = document.getElementById('brand-select').value;
-    apiOps.createProduct(b, document.getElementById('new-product-name').value);
+    const b = STATE.brandCombo ? STATE.brandCombo.getValue() : null;
+    const name = document.getElementById('new-product-name').value.trim();
+    if (!name) return ui.toast('请输入产品名称', 'error');
+    apiOps.createProduct(
+      b,
+      name,
+      [...formState.newProductSellingPoints],
+      [...formState.newProductAssocs],
+    );
   });
+
+  // 新建产品 modal 内卖点 / 联想词 回车添加
+  const npSpInput = document.getElementById('new-product-selling-point-input');
+  if (npSpInput) {
+    npSpInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        formState.addNewProductSellingPoint(e.target.value.trim());
+        e.target.value = '';
+      }
+    });
+  }
+  const npAsInput = document.getElementById('new-product-assoc-input');
+  if (npAsInput) {
+    npAsInput.addEventListener('keydown', e => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        formState.addNewProductAssoc(e.target.value.trim());
+        e.target.value = '';
+      }
+    });
+  }
   
   // Chips
   const spInput = document.getElementById('temp-selling-point');
@@ -630,18 +896,27 @@ function bindEvents() {
   document.getElementById('btn-suggest').addEventListener('click', () => {
     apiOps.suggestAssoc();
   });
+
+  document.getElementById('btn-suggest-all').addEventListener('click', () => {
+    const container = document.getElementById('suggest-chips');
+    // 收集所有建议词文本（chip 里 textContent 是 "+ 词"）
+    const items = Array.from(container.children).map(el => el.textContent.replace(/^\+ /, ''));
+    items.forEach(item => formState.addAssoc(item));
+    container.replaceChildren();
+    document.getElementById('btn-suggest-all').hidden = true;
+  });
   
   // Source Tabs
-  document.querySelectorAll('.tabs [data-tab]').forEach(tab => {
+  document.querySelectorAll('#source-tabs [data-tab]').forEach(tab => {
     tab.addEventListener('click', e => {
-      ui.switchTab('.tabs', e.target.dataset.tab, 'source-');
+      ui.switchTab('#source-tabs', e.target.dataset.tab, 'source-');
     });
   });
   
   // Detail Tabs
-  document.querySelectorAll('.tabs [data-detail-tab]').forEach(tab => {
+  document.querySelectorAll('#detail-tabs [data-detail-tab]').forEach(tab => {
     tab.addEventListener('click', e => {
-      ui.switchTab('.tabs', e.target.dataset.detailTab, 'detail-');
+      ui.switchTab('#detail-tabs', e.target.dataset.detailTab, 'detail-');
     });
   });
   
@@ -662,21 +937,18 @@ function bindEvents() {
   uploadZone.addEventListener('drop', e => {
     e.preventDefault();
     uploadZone.classList.remove('drag-over');
-    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
-      apiOps.uploadFile(e.dataTransfer.files[0]);
+    if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+      apiOps.uploadFiles(Array.from(e.dataTransfer.files));
     }
   });
-  
+
   fileInput.addEventListener('change', e => {
-    if (e.target.files && e.target.files[0]) {
-      apiOps.uploadFile(e.target.files[0]);
+    if (e.target.files && e.target.files.length > 0) {
+      apiOps.uploadFiles(Array.from(e.target.files));
     }
   });
   
-  // ASR
-  document.getElementById('asr-engine').addEventListener('change', e => {
-    document.getElementById('transcript-path-wrap').classList.toggle('hidden', e.target.value !== 'transcript');
-  });
+  // ASR - transcript-path 显隐已在 init() 阶段通过 asrCombo onChange 绑定
   
   // Detail Back
   document.getElementById('btn-back').addEventListener('click', hideJobDetail);
@@ -705,6 +977,40 @@ function bindEvents() {
 }
 
 function init() {
+  // 实例化 Combobox（必须在 bindEvents/loadBrands 之前，因为 STATE.*Combo 会被它们引用）
+  STATE.brandCombo = new Combobox(document.getElementById('brand-combobox'), {
+    placeholder: '-- 选择品牌 --',
+    searchable: true,
+    onChange: value => {
+      apiOps.loadProducts(value);
+    },
+  });
+  STATE.productCombo = new Combobox(document.getElementById('product-combobox'), {
+    placeholder: '-- 选择产品 --',
+    searchable: true,
+    disabled: true,
+    onChange: value => {
+      const p = STATE.products.find(x => x.id === value);
+      if (p) apiOps.loadProductDetails(p);
+    },
+  });
+  STATE.asrCombo = new Combobox(document.getElementById('asr-engine-combobox'), {
+    placeholder: '-- 选择 ASR 引擎 --',
+    searchable: false,
+    options: [
+      { value: 'transcript', label: 'transcript (默认)' },
+      { value: 'faster-whisper', label: 'faster-whisper' },
+      { value: 'funasr', label: 'funasr' },
+      { value: 'glm-asr', label: 'glm-asr (高精度)' },
+    ],
+    onChange: value => {
+      document.getElementById('transcript-path-wrap').classList.toggle('hidden', value !== 'transcript');
+    },
+  });
+  STATE.asrCombo.setValue('faster-whisper');
+  // faster-whisper 不显示 transcript-path
+  document.getElementById('transcript-path-wrap').classList.add('hidden');
+
   bindEvents();
   if (STATE.token) {
     apiOps.loadBrands();

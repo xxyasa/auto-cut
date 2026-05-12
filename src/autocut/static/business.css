@@ -210,6 +210,17 @@ input:disabled, select:disabled {
   background-color: var(--surface-2);
 }
 
+.btn-danger {
+  background-color: transparent;
+  color: var(--error, #e53935);
+  border-color: var(--error, #e53935);
+}
+
+.btn-danger:hover {
+  background-color: var(--error, #e53935);
+  color: #fff;
+}
+
 .btn-sm {
   padding: 4px 8px;
   font-size: 0.75rem;
@@ -272,6 +283,30 @@ input:disabled, select:disabled {
 .upload-zone:hover, .upload-zone.drag-over {
   border-color: var(--primary);
   background-color: rgba(99, 102, 241, 0.05);
+}
+
+.batch-file-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 160px;
+  overflow-y: auto;
+}
+
+.batch-file-item {
+  font-size: 0.75rem;
+  padding: 4px 8px;
+  border-radius: var(--radius-sm);
+  background: var(--surface-2);
+  color: var(--text-muted);
+}
+
+.batch-file-item.done {
+  color: var(--success);
+}
+
+.batch-file-item.error {
+  color: var(--error, #e53935);
 }
 
 /* Tabs */
@@ -349,6 +384,22 @@ input:disabled, select:disabled {
   display: flex;
   gap: var(--space-2);
   align-items: center;
+}
+
+.job-progress-bar {
+  height: 4px;
+  background: var(--surface-2);
+  border-radius: 2px;
+  margin-top: 4px;
+  overflow: hidden;
+}
+
+.job-progress-fill {
+  height: 100%;
+  background: var(--primary);
+  border-radius: 2px;
+  transition: width 0.4s ease;
+  min-width: 4px;
 }
 
 /* Badge */
