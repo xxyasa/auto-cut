@@ -1,0 +1,40 @@
+services:
+  autocut:
+    build: .
+    image: autocut:latest
+    container_name: autocut
+    restart: unless-stopped
+    ports:
+      - "8765:8765"
+    environment:
+      # API 鉴权 Token（必填，部署前改掉）
+      AUTOCUT_API_TOKEN: ${AUTOCUT_API_TOKEN:-changeme}
+      # LLM 接口（可选，不填则跳过 LLM 评分/remix）
+      AUTOCUT_LLM_API_URL: ${AUTOCUT_LLM_API_URL:-}
+      AUTOCUT_LLM_MODEL: ${AUTOCUT_LLM_MODEL:-}
+      AUTOCUT_LLM_API_KEY: ${AUTOCUT_LLM_API_KEY:-}
+      # 数据目录（容器内固定路径，外部通过 volume 映射）
+      AUTOCUT_RUNS_DIR: /data/runs
+      AUTOCUT_UPLOAD_DIR: /data/uploads
+      PYTHONUNBUFFERED: "1"
+    volumes:
+      # 持久化数据：任务产物、上传文件、本地模型
+      - ./data/runs:/data/runs
+      - ./data/uploads:/data/uploads
+      - ./models:/models:ro          # 只读挂载，防止容器写坏模型文件
+    # ASR 用 CPU 跑，给够内存；如需 GPU 见下方注释
+    deploy:
+      resources:
+        limits:
+          memory: 4g
+
+# 如需 GPU 支持（需 nvidia-container-toolkit）：
+# 取消下面注释，并删除上方 deploy.resources 块
+#
+#     deploy:
+#       resources:
+#         reservations:
+#           devices:
+#             - driver: nvidia
+#               count: 1
+#               capabilities: [gpu]
