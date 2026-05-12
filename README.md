@@ -147,4 +147,75 @@ POST /api/runs/{run_id}/remix/export
 }
 ```
 
+## Docker 部署（推荐生产环境）
+
+### 前置条件
+
+- Docker 20.10+
+- docker compose v2（`docker compose` 命令）
+
+### 快速启动
+
+```bash
+# 1. 克隆项目
+git clone <repo-url>
+cd auto-cut
+
+# 2. 创建环境变量文件（不要提交到 git）
+cp .env.example .env
+# 编辑 .env，至少设置：
+#   AUTOCUT_API_TOKEN=<你的 token>
+#   AUTOCUT_LLM_API_KEY=<你的 LLM key>（可选）
+
+# 3. 创建本地数据目录
+mkdir -p data/runs data/uploads models
+
+# 4. 构建并启动
+docker compose up -d --build
+
+# 访问：http://your-server-ip:8765/business.html
+```
+
+### 环境变量说明
+
+| 变量 | 必填 | 说明 |
+|------|------|------|
+| `AUTOCUT_API_TOKEN` | ✅ | 前端鉴权 token，自行设置 |
+| `AUTOCUT_LLM_API_URL` | 否 | LLM 接口地址 |
+| `AUTOCUT_LLM_MODEL` | 否 | 模型名，如 `deepseek-v3.2` |
+| `AUTOCUT_LLM_API_KEY` | 否 | LLM API Key |
+
+### 本地模型挂载
+
+把模型文件放在宿主机 `./models/` 目录下，容器会自动以只读方式挂载到 `/models`。
+
+```bash
+# 例：把 faster-whisper-small 放进去
+ls models/
+# faster-whisper-small/
+```
+
+在任务创建时 ASR 模型路径填 `/models/faster-whisper-small` 即可。
+
+### 日志与重启
+
+```bash
+# 查看日志
+docker compose logs -f
+
+# 重启服务
+docker compose restart
+
+# 停止
+docker compose down
+```
+
+### Linux 裸机启动（不用 Docker）
+
+```bash
+chmod +x scripts/start.sh
+./scripts/start.sh                        # 默认 127.0.0.1:8765
+./scripts/start.sh --host 0.0.0.0 --port 8770   # 对外暴露
+```
+
 `stream=true` 时后端会按流式读取模型响应，但最终仍聚合出 `ordered_ids` 后再导出视频。模型只允许返回字幕 ID 顺序，不能改写每句字幕文本。
