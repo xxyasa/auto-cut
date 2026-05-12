@@ -638,6 +638,59 @@ def get_job_log_route(
     return {"lines": jobs.read_log(job_id, tail=tail)}
 
 
+# ---------- Artifacts (MP4 预览/下载) ----------
+
+
+_SAFE_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+
+@router.get("/jobs/{job_id}/artifacts/{name}")
+def get_job_artifact_route(job_id: str, name: str):
+    """从 runs_root/<job_id>/exports/<name> 返回工件文件。
+
+    安全：
+      - name 必须匹配 [A-Za-z0-9._-]+，禁止 / .. 路径穿越
+      - 仅允许 .mp4 / .json 后缀
+      - 必须 resolve 后仍位于 exports/ 目录内
+    """
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail=f"job_not_found: {job_id}"
+        )
+    if not _SAFE_ARTIFACT_RE.match(name):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"invalid_artifact_name: {name}",
+        )
+    ext = Path(name).suffix.lower()
+    if ext not in {".mp4", ".json"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"artifact_extension_not_allowed: {ext}",
+        )
+    runs_root = _runs_dir()
+    exports_dir = (runs_root / job_id / "exports").resolve()
+    target = (exports_dir / name).resolve()
+    try:
+        target.relative_to(exports_dir)
+    except ValueError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="path_traversal_blocked",
+        ) from exc
+    if not target.exists() or not target.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"artifact_not_found: {name}",
+        )
+
+    from fastapi.responses import FileResponse
+
+    media_type = "video/mp4" if ext == ".mp4" else "application/json"
+    return FileResponse(target, media_type=media_type, filename=name)
+
+
 # ---------- Lifespan hooks（api.py 调用） ----------
 
 

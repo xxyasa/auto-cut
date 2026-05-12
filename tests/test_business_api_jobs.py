@@ -229,7 +229,8 @@ class JobsListAndLogTests(_Base):
         self.assertTrue(any("hello world" in line for line in lines))
 
 
-class BrandResolutionTests(_Base):
+if __name__ == "__main__":
+    unittest.main()
     """走真实 brand_repo 的三种 brand_product 解析路径。"""
 
     def test_brand_id_only(self):
@@ -274,6 +275,62 @@ class BrandResolutionTests(_Base):
             headers=self.headers,
         )
         self.assertEqual(resp.status_code, 201, resp.text)
+
+
+class ArtifactsTests(_Base):
+    def _seed_artifact(self, job_id: str, name: str, payload: bytes) -> Path:
+        exports = Path(self.runs_dir) / job_id / "exports"
+        exports.mkdir(parents=True, exist_ok=True)
+        path = exports / name
+        path.write_bytes(payload)
+        return path
+
+    def _new_job(self) -> str:
+        def runner(job):
+            return {}
+        return jobs.enqueue({}, runner, tracks=["enabled"])
+
+    def test_get_artifact_mp4(self):
+        job_id = self._new_job()
+        self._seed_artifact(job_id, "result.mp4", b"FAKE-MP4")
+        resp = self.client.get(
+            f"/api/business/jobs/{job_id}/artifacts/result.mp4",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.content, b"FAKE-MP4")
+        self.assertEqual(resp.headers["content-type"], "video/mp4")
+
+    def test_job_not_found(self):
+        resp = self.client.get(
+            "/api/business/jobs/job_nope/artifacts/x.mp4", headers=self.headers
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_artifact_not_found(self):
+        job_id = self._new_job()
+        resp = self.client.get(
+            f"/api/business/jobs/{job_id}/artifacts/missing.mp4",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 404)
+
+    def test_bad_name_rejected(self):
+        job_id = self._new_job()
+        resp = self.client.get(
+            f"/api/business/jobs/{job_id}/artifacts/has space.mp4",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
+
+    def test_bad_extension(self):
+        job_id = self._new_job()
+        self._seed_artifact(job_id, "evil.exe", b"X")
+        resp = self.client.get(
+            f"/api/business/jobs/{job_id}/artifacts/evil.exe",
+            headers=self.headers,
+        )
+        self.assertEqual(resp.status_code, 400)
 
 
 if __name__ == "__main__":

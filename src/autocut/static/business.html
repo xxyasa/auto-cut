@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Auto Cut · 自助成片</title>
+    <link href="/business.css" rel="stylesheet">
+    <script>
+        // Prevent dark mode flash
+        const savedTheme = localStorage.getItem('autocut_theme') || 
+            (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
+        document.documentElement.setAttribute('data-theme', savedTheme);
+    </script>
+    <script src="/business.js" defer></script>
+</head>
+<body>
+    <header class="app-header">
+        <div class="app-title">Auto Cut · 自助成片</div>
+        <div class="header-actions">
+            <input type="password" id="api-token" placeholder="输入 API Token" title="按 / 聚焦">
+            <button id="btn-theme" class="btn btn-secondary">🌓</button>
+            <button id="btn-refresh" class="btn btn-secondary" title="刷新任务列表">↻</button>
+        </div>
+    </header>
+
+    <main class="main-container">
+        <!-- 左侧表单区 -->
+        <section class="left-panel">
+            <form id="job-form" class="card">
+                <div class="card-title">新建任务</div>
+
+                <!-- 品牌产品 -->
+                <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+                    <label>产品模式</label>
+                    <div class="flex gap-2 mt-2 mb-4">
+                        <label class="flex items-center gap-2"><input type="radio" name="product-mode" value="brand" checked> 使用已有品牌</label>
+                        <label class="flex items-center gap-2"><input type="radio" name="product-mode" value="temp"> 临时产品</label>
+                    </div>
+
+                    <div id="brand-mode-wrap">
+                        <div class="flex gap-2">
+                            <select id="brand-select"><option value="">-- 选择品牌 --</option></select>
+                            <button type="button" id="btn-new-brand" class="btn btn-secondary btn-sm">新建</button>
+                        </div>
+                        <div class="flex gap-2 mt-2">
+                            <select id="product-select" disabled><option value="">-- 选择产品 --</option></select>
+                            <button type="button" id="btn-new-product" class="btn btn-secondary btn-sm" disabled>新建</button>
+                        </div>
+                    </div>
+
+                    <div id="temp-mode-wrap" class="hidden">
+                        <input type="text" id="temp-product-name" placeholder="产品名称">
+                        <div class="mt-2">
+                            <input type="text" id="temp-selling-point" placeholder="输入卖点按回车添加">
+                            <div id="selling-points-chips" class="chip-container"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- 联想词 -->
+                <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+                    <label>专属词汇 (可补全识别)</label>
+                    <div class="flex gap-2 mb-2">
+                        <input type="text" id="assoc-input" placeholder="输入专属词按回车添加">
+                        <button type="button" id="btn-suggest" class="btn btn-secondary btn-sm">LLM建议</button>
+                    </div>
+                    <div id="assoc-chips" class="chip-container"></div>
+                    <div id="suggest-chips" class="chip-container mt-2"></div>
+                </div>
+
+                <!-- 视频源 -->
+                <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+                    <label>视频源</label>
+                    <div class="tabs mt-2">
+                        <div class="tab active" data-tab="upload">本地上传</div>
+                        <div class="tab" data-tab="oss">OSS 链接</div>
+                        <div class="tab" data-tab="url">直链 URL</div>
+                    </div>
+                    
+                    <div id="source-upload" class="tab-content">
+                        <div class="upload-zone" id="upload-zone">
+                            <p>点击或拖拽 mp4 文件至此处</p>
+                            <p class="text-sm text-muted mt-2" id="upload-status"></p>
+                            <input type="file" id="file-input" accept="video/mp4" class="hidden">
+                        </div>
+                    </div>
+                    <div id="source-oss" class="tab-content hidden">
+                        <input type="text" id="oss-input" placeholder="oss://bucket/path/to/video.mp4">
+                    </div>
+                    <div id="source-url" class="tab-content hidden">
+                        <input type="text" id="url-input" placeholder="https://...">
+                    </div>
+                </div>
+
+                <!-- 轨道选项 -->
+                <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
+                    <label>生成轨道</label>
+                    <div class="flex gap-2 mt-2 flex-wrap">
+                        <label class="flex items-center gap-2"><input type="checkbox" id="track-enabled" value="enabled" checked> 初剪 enabled</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="track-remix" value="remix" checked> 千川 remix</label>
+                    </div>
+                    
+                    <div id="remix-options" class="mt-2 p-3 bg-surface-2 rounded" style="background-color: var(--surface-2); padding: 12px; border-radius: 4px;">
+                        <label class="flex items-center gap-2 mb-2"><input type="checkbox" id="remix-use-llm" checked> 使用 LLM 智能排序</label>
+                        <div class="flex items-center gap-2">
+                            <label class="text-sm">目标时长 (秒):</label>
+                            <input type="number" id="remix-duration" value="25" min="5" max="60" style="width: 80px;">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ASR引擎 (折叠) -->
+                <div class="form-group">
+                    <details>
+                        <summary class="text-sm font-medium text-muted cursor-pointer" style="cursor: pointer;">高级 ASR 设置</summary>
+                        <div class="mt-2">
+                            <select id="asr-engine">
+                                <option value="transcript">transcript (默认)</option>
+                                <option value="faster-whisper">faster-whisper</option>
+                                <option value="funasr">funasr</option>
+                            </select>
+                            <div id="transcript-path-wrap" class="mt-2">
+                                <input type="text" id="transcript-path" placeholder="预提取 transcript JSON 路径 (可选)">
+                            </div>
+                        </div>
+                    </details>
+                </div>
+
+                <div class="mt-6">
+                    <button type="submit" class="btn btn-primary" style="width: 100%; font-size: 1rem; padding: 12px;">创建任务 (Ctrl+Enter)</button>
+                </div>
+            </form>
+        </section>
+
+        <!-- 右侧任务列表与详情 -->
+        <section class="right-panel card" style="display: flex; flex-direction: column;">
+            
+            <!-- 列表视图 -->
+            <div id="view-list" class="flex" style="flex-direction: column; flex: 1;">
+                <div class="card-title">任务列表</div>
+                <div id="jobs-container" style="flex: 1; overflow-y: auto;">
+                    <div class="text-center text-muted mt-8" id="empty-state">
+                        还没有任务，去左侧创建一个吧
+                    </div>
+                    <div id="jobs-list"></div>
+                </div>
+            </div>
+
+            <!-- 详情视图 -->
+            <div id="view-detail" class="hidden" style="flex-direction: column; flex: 1;">
+                <div class="flex justify-between items-center mb-4">
+                    <button id="btn-back" class="btn btn-secondary btn-sm">← 返回列表</button>
+                    <div id="detail-header-actions" class="flex gap-2"></div>
+                </div>
+                
+                <div class="flex justify-between items-center mb-2">
+                    <div class="job-id" id="detail-id"></div>
+                    <div class="badge" id="detail-status"></div>
+                </div>
+                
+                <div class="text-sm text-muted mb-2">状态: <span id="detail-stage"></span></div>
+                <div class="progress-bar mb-4"><div class="progress-fill" id="detail-progress" style="width: 0%"></div></div>
+
+                <div class="tabs">
+                    <div class="tab active" data-detail-tab="log">日志</div>
+                    <div class="tab" data-detail-tab="enabled">Enabled 轨道</div>
+                    <div class="tab" data-detail-tab="remix">Remix 轨道</div>
+                </div>
+
+                <div id="detail-log" class="log-view"></div>
+                
+                <div id="detail-enabled" class="hidden flex" style="flex-direction: column; gap: 8px;">
+                    <div class="video-container"><video id="video-enabled" controls></video></div>
+                    <a id="link-enabled" class="btn btn-secondary btn-sm text-center" target="_blank" download>下载 Enabled MP4</a>
+                </div>
+                
+                <div id="detail-remix" class="hidden flex" style="flex-direction: column; gap: 8px;">
+                    <div class="video-container"><video id="video-remix" controls></video></div>
+                    <a id="link-remix" class="btn btn-secondary btn-sm text-center" target="_blank" download>下载 Remix MP4</a>
+                </div>
+            </div>
+
+        </section>
+    </main>
+
+    <!-- Toasts container -->
+    <div id="toast-container" class="toast-container"></div>
+
+    <!-- Modal for new Brand -->
+    <div id="modal-brand" class="modal-overlay">
+        <div class="modal">
+            <div class="card-title">新建品牌</div>
+            <input type="text" id="new-brand-name" placeholder="品牌名称">
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modal-brand')">取消</button>
+                <button type="button" class="btn btn-primary" id="submit-new-brand">确认</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Modal for new Product -->
+    <div id="modal-product" class="modal-overlay">
+        <div class="modal">
+            <div class="card-title">新建产品</div>
+            <input type="text" id="new-product-name" placeholder="产品名称">
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" onclick="closeModal('modal-product')">取消</button>
+                <button type="button" class="btn btn-primary" id="submit-new-product">确认</button>
+            </div>
+        </div>
+    </div>
+</body>
+</html>

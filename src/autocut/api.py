@@ -95,6 +95,23 @@ def create_app():
     def index():
         return FileResponse(static_root / "index.html")
 
+    @app.get("/business")
+    def business_page_redirect():
+        from fastapi.responses import RedirectResponse
+        return RedirectResponse(url="/business.html")
+
+    @app.get("/business.html")
+    def business_page():
+        return FileResponse(static_root / "business.html")
+
+    @app.get("/business.css")
+    def business_css():
+        return FileResponse(static_root / "business.css", media_type="text/css")
+
+    @app.get("/business.js")
+    def business_js():
+        return FileResponse(static_root / "business.js", media_type="application/javascript")
+
     @app.get("/api/runs")
     def list_runs():
         runs_root.mkdir(parents=True, exist_ok=True)
