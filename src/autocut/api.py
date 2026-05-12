@@ -53,15 +53,35 @@ def create_app():
 
     app = FastAPI(title="Auto Cut API", version="0.1.0")
 
-    # 业务自助成片路由（提案 0001 PR-1）。鉴权由路由内部 Depends(require_token) 负责，
+    # 业务自助成片路由（提案 0001 PR-1 ~ PR-2b）。鉴权由路由内部 Depends(require_token) 负责，
     # 启动时不强行校验 AUTOCUT_API_TOKEN，避免影响现有本地审核台启动。
     # 首次访问业务路由若 token 未配置，会返回 500 server_misconfigured。
+    business_module = None
     try:
-        from .business_api import router as business_router
+        from . import business_api as business_module  # type: ignore
 
-        app.include_router(business_router)
+        app.include_router(business_module.router)
     except RuntimeError:  # API extras 缺失时跳过，保持现状路由可用
-        pass
+        business_module = None
+
+    # PR-2b: 用 router lifespan 接管 jobs worker 与 orphan 恢复。
+    # FastAPI 推荐用 lifespan context manager，但 app 已被构造，需要走 router 层 add_event_handler。
+    # 实际效果与 on_event 等价但不弹 DeprecationWarning。
+    if business_module is not None:
+        def _autocut_startup() -> None:
+            try:
+                business_module.lifespan_startup()
+            except Exception:  # pragma: no cover - 启动期保护
+                pass
+
+        def _autocut_shutdown() -> None:
+            try:
+                business_module.lifespan_shutdown()
+            except Exception:  # pragma: no cover
+                pass
+
+        app.router.add_event_handler("startup", _autocut_startup)
+        app.router.add_event_handler("shutdown", _autocut_shutdown)
 
     project_root = Path(os.environ.get("AUTOCUT_ROOT", Path.cwd())).resolve()
     runs_root = Path(os.environ.get("AUTOCUT_RUNS_DIR", project_root / "data" / "runs")).resolve()
