@@ -3,7 +3,7 @@ from __future__ import annotations
 import re
 from collections import Counter
 
-from .models import TranscriptSegment
+from .models import CandidateClip, TranscriptSegment
 
 
 FILLER_WORDS = [
@@ -155,3 +155,60 @@ def clean_segments(segments: list[TranscriptSegment]) -> list[TranscriptSegment]
         segment.invalid_reasons = invalid_reasons
         cleaned_segments.append(segment)
     return cleaned_segments
+
+
+# 只用于"开头裁剪"的单字水词集合（短音节、语气词）
+_LEADING_FILLER_CHARS: frozenset[str] = frozenset(
+    "啊阿哦哟呀嗯呢哈哎唉哇喂哼呵"
+    "啊阿哦哟呀嗯呢哈哎唉哇喂哼呵"  # 全角兜底
+)
+
+
+def _is_leading_filler_word(word: str) -> bool:
+    """判断一个 ASR word 是否是纯开头水词（单个语气字或咳嗽标记）。"""
+    w = word.strip().lstrip("[（(【")  # 去掉 faster-whisper 可能加的括号标记
+    w = w.rstrip("]）)】.,，。")
+    if not w:
+        return True
+    # 单字语气词
+    if len(w) == 1 and w in _LEADING_FILLER_CHARS:
+        return True
+    # ASR 咳嗽标记，如 "[咳嗽]" / "(cough)" 等
+    if re.fullmatch(r"[\[(（【]?(咳嗽?|咳咳|cough|noise|throat)[\]）)】]?", w, re.IGNORECASE):
+        return True
+    return False
+
+
+def trim_leading_fillers(
+    candidates: list[CandidateClip],
+    transcript: list[TranscriptSegment],
+) -> list[CandidateClip]:
+    """把每个候选片段开头连续的水词单字从时间上裁掉。
+
+    仅调整 start_time，不拆分 segment。若整段都是水词则不裁（保留原样）。
+    """
+    for candidate in candidates:
+        if not candidate.segment_indexes:
+            continue
+        first_seg = transcript[candidate.segment_indexes[0]]
+        words = first_seg.words  # [{start, end, word}]
+        if not words:
+            continue
+
+        new_start: float | None = None
+        for word_info in words:
+            w = word_info.get("word", "")
+            if _is_leading_filler_word(w):
+                continue
+            # 找到第一个非水词
+            new_start = float(word_info["start"])
+            break
+
+        # new_start 为 None 说明整段都是水词，跳过
+        if new_start is None:
+            continue
+        # 只往后推，不往前缩
+        if new_start > candidate.start_time + 0.05:
+            candidate.start_time = new_start
+
+    return candidates

@@ -470,6 +470,11 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                 asr_compute_type=payload.asr_compute_type,
                 asr_beam_size=payload.asr_beam_size,
                 brand_terms=brand_terms,
+                on_progress=lambda stage, pct: jobs.update_status(
+                    job,
+                    stage=stage,
+                    progress=round(0.2 + pct * 0.4, 3),  # pipeline 占总进度 20%~60%
+                ),
             )
             try:
                 LiveClipPipeline().run(req)

@@ -112,6 +112,20 @@ def create_app():
     def business_js():
         return FileResponse(static_root / "business.js", media_type="application/javascript")
 
+    @app.get("/combobox.css")
+    def combobox_css():
+        return FileResponse(static_root / "combobox.css", media_type="text/css")
+
+    @app.get("/combobox.js")
+    def combobox_js():
+        return FileResponse(static_root / "combobox.js", media_type="application/javascript")
+
+    @app.get("/favicon.ico")
+    def favicon():
+        # 静态目录暂无 favicon，返回 204 No Content 避免控制台噪音
+        from fastapi import Response
+        return Response(status_code=204)
+
     @app.get("/api/runs")
     def list_runs():
         runs_root.mkdir(parents=True, exist_ok=True)

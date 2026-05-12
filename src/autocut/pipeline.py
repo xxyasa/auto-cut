@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import media
 from .asr import create_asr_engine
-from .cleaning import clean_segments
+from .cleaning import clean_segments, trim_leading_fillers
 from .exporter import export_pipeline_result
 from .lexicon import build_asr_terms, load_terms_file
 from .models import PipelineRequest, PipelineResult, to_plain_dict
@@ -15,20 +15,27 @@ from .segment import build_candidates
 
 class LiveClipPipeline:
     def run(self, request: PipelineRequest) -> PipelineResult:
+        def progress(stage: str, pct: float) -> None:
+            if request.on_progress:
+                request.on_progress(stage, pct)
+
         warnings: list[str] = []
         video_path = request.video_path.resolve()
         if not video_path.exists():
             raise FileNotFoundError(video_path)
 
+        progress("探测视频信息", 0.05)
         info = media.probe_video(video_path)
         if info.duration is None:
             warnings.append("ffprobe not found or duration unavailable")
 
+        progress("提取音频", 0.10)
         audio_path = request.output_dir / "audio" / f"{video_path.stem}.wav"
         audio_warning = media.extract_audio(video_path, audio_path)
         if audio_warning:
             warnings.append(audio_warning)
 
+        progress("ASR 语音识别", 0.15)
         asr_engine = create_asr_engine(
             request.asr_engine,
             request.transcript_path,
@@ -46,6 +53,7 @@ class LiveClipPipeline:
         transcript = asr_engine.transcribe(audio_path, language=request.language, asr_terms=asr_terms)
         transcript = clean_segments(transcript)
 
+        progress("构建候选片段", 0.65)
         candidates = build_candidates(
             transcript,
             source_video=video_path,
@@ -59,8 +67,12 @@ class LiveClipPipeline:
             max_overlap_ratio=request.max_overlap_ratio,
             max_candidates=request.max_candidates,
         )
-        candidates = score_candidates(candidates, request.product, request.selling_points)
 
+        progress("评分与裁剪", 0.75)
+        candidates = score_candidates(candidates, request.product, request.selling_points)
+        candidates = trim_leading_fillers(candidates, transcript)
+
+        progress("导出轨道文件", 0.80)
         result = PipelineResult(
             media=info,
             transcript=transcript,
@@ -77,6 +89,7 @@ class LiveClipPipeline:
         )
         result.warnings.extend(export_warnings)
         self._write_request(request)
+        progress("pipeline 完成", 0.95)
         return result
 
     def _write_request(self, request: PipelineRequest) -> None:
