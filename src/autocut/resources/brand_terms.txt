@@ -1,0 +1,24 @@
+# One term per line. Lines starting with # are ignored.
+Pinkypinky
+PinkyPinky
+哈利波特
+Harry Potter
+霍格沃茨
+格兰芬多
+斯莱特林
+拉文克劳
+赫奇帕奇
+学院徽
+学院动物形象
+雨伞
+透明伞
+磨砂窗透明伞
+磨砂半透明
+伞面
+伞骨
+加固伞骨
+纤维骨
+POE
+PEO
+POE伞布
+PEO伞布

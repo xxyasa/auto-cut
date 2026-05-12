@@ -1,0 +1,1485 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Auto Cut 轨道审核台</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f5f6f8;
+      --panel: #ffffff;
+      --line: #d8dee8;
+      --text: #1f2937;
+      --muted: #6b7280;
+      --brand: #1565c0;
+      --brand-soft: #e8f2ff;
+      --active: #0f8a5f;
+      --active-bg: #e8f7ef;
+      --active-line: #a7d9bf;
+      --disabled: #9ca3af;
+      --disabled-bg: #eceff3;
+      --delete-bg: #fdeeee;
+      --delete-line: #f2b8b5;
+      --delete-text: #9f1f18;
+      --warn: #9a6700;
+      --bad: #b42318;
+      --shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+      color: var(--text);
+      background: var(--bg);
+      letter-spacing: 0;
+    }
+    header {
+      height: 56px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+    }
+    h1 { font-size: 18px; margin: 0; font-weight: 700; }
+    button {
+      font: inherit;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      color: var(--text);
+      cursor: pointer;
+    }
+    button:hover { border-color: #9db6d6; }
+    button.primary { color: #fff; background: var(--brand); border-color: var(--brand); }
+    button.good { color: var(--active); border-color: #97d4bd; }
+    button.bad { color: var(--bad); border-color: #f0aaa3; }
+    .layout {
+      display: grid;
+      grid-template-columns: 300px minmax(520px, 1fr) 390px;
+      gap: 12px;
+      padding: 12px;
+      height: calc(100vh - 56px);
+      min-height: 660px;
+    }
+    .pane {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      min-height: 0;
+    }
+    .pane-title {
+      height: 44px;
+      padding: 0 14px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      border-bottom: 1px solid var(--line);
+      font-weight: 700;
+      font-size: 14px;
+    }
+    .sidebar-body, .editor-body, .segment-body { height: calc(100% - 44px); overflow: auto; }
+    .sidebar-section { border-bottom: 1px solid var(--line); }
+    .section-title {
+      padding: 10px 14px 6px;
+      font-size: 12px;
+      color: var(--muted);
+      font-weight: 700;
+    }
+    .run-item, .clip-item {
+      width: 100%;
+      display: block;
+      text-align: left;
+      border: 0;
+      border-bottom: 1px solid var(--line);
+      border-radius: 0;
+      padding: 11px 14px;
+      background: transparent;
+    }
+    .run-item:hover, .clip-item:hover, .run-item.active, .clip-item.active { background: var(--brand-soft); }
+    .item-title { font-size: 13px; font-weight: 700; word-break: break-all; }
+    .item-meta {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 12px;
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .editor-body { padding: 12px; display: flex; flex-direction: column; gap: 12px; }
+    .player-layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 150px;
+      gap: 10px;
+      align-items: stretch;
+    }
+    .player-shell {
+      background: #101827;
+      border-radius: 8px;
+      overflow: hidden;
+      min-height: 0;
+    }
+    video {
+      width: 100%;
+      max-height: 44vh;
+      aspect-ratio: 16 / 9;
+      background: #101827;
+      display: block;
+    }
+    .toolbar {
+      display: grid;
+      grid-template-columns: repeat(5, minmax(88px, 1fr));
+      gap: 8px;
+    }
+    .toolbar button { height: 36px; font-weight: 700; }
+    .stats {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 8px;
+      align-content: start;
+    }
+    .stat {
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #fafbfc;
+    }
+    .stat strong { display: block; color: var(--text); font-size: 16px; margin-top: 2px; }
+    .timeline-shell {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfc;
+      padding: 12px;
+    }
+    .timeline-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+    .track-head-actions {
+      display: flex;
+      align-items: center;
+      justify-content: flex-end;
+      gap: 10px;
+      margin-left: auto;
+      flex-wrap: wrap;
+    }
+    .track-zoom {
+      display: inline-flex;
+      align-items: center;
+      gap: 3px;
+      padding: 2px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(17, 24, 39, 0.04);
+    }
+    .track-zoom button {
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border-radius: 5px;
+      font-size: 16px;
+      line-height: 1;
+      font-weight: 700;
+    }
+    .track-zoom button:disabled {
+      color: #b6bfcc;
+      background: #f4f6f8;
+      cursor: not-allowed;
+    }
+    .track-zoom span {
+      min-width: 42px;
+      text-align: center;
+      color: var(--muted);
+      font-size: 12px;
+      font-weight: 700;
+    }
+    .track-scroll {
+      overflow-x: auto;
+      overflow-y: hidden;
+      border-radius: 7px;
+      background: #cfd6e1;
+      scrollbar-width: thin;
+      touch-action: pan-x;
+      cursor: grab;
+    }
+    .track-scroll.panning {
+      cursor: grabbing;
+      user-select: none;
+    }
+    .track {
+      display: flex;
+      gap: 2px;
+      min-height: 76px;
+      min-width: 100%;
+      width: max-content;
+      border-radius: 7px;
+      overflow: visible;
+      background: #cfd6e1;
+    }
+    .piece {
+      min-width: 18px;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      position: relative;
+      color: #fff;
+      background: #1d6fb8;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      cursor: grab;
+    }
+    .piece:active { cursor: grabbing; }
+    .piece.disabled { background: var(--disabled-bg); color: #667085; }
+    .piece.active { outline: 3px solid #f1b44c; outline-offset: -3px; z-index: 2; }
+    .piece.dragging { opacity: 0.45; }
+    .piece span {
+      width: 100%;
+      padding: 4px 3px;
+      font-size: 11px;
+      line-height: 1.2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .piece.disabled span { background: rgba(255, 255, 255, 0.55); }
+    .remix-shell {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fafbfc;
+      padding: 12px;
+    }
+    .remix-track {
+      display: flex;
+      gap: 2px;
+      min-height: 64px;
+      border-radius: 7px;
+      overflow: hidden;
+      background: var(--line);
+      margin-bottom: 10px;
+      cursor: grab;
+      box-shadow: var(--shadow);
+    }
+    .remix-track.drop-ready {
+      outline: 2px dashed #f1b44c;
+      outline-offset: 2px;
+      background: #f5d58b;
+    }
+    .remix-piece {
+      min-width: 24px;
+      border: 0;
+      border-radius: 0;
+      padding: 0;
+      position: relative;
+      color: #fff;
+      background: #6d28d9;
+      display: flex;
+      align-items: flex-end;
+      justify-content: center;
+      cursor: grab;
+      transition: opacity 0.15s;
+      user-select: none;
+    }
+    .remix-piece:hover { opacity: 0.85; }
+    .remix-piece.active { outline: 3px solid #f1b44c; outline-offset: -3px; z-index: 2; }
+    .remix-piece.dragging { opacity: 0.4; }
+    .remix-piece.manual-source { background: #0f766e; }
+    .remix-piece span {
+      width: 100%;
+      padding: 4px 3px;
+      font-size: 11px;
+      line-height: 1.2;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      background: rgba(0, 0, 0, 0.18);
+    }
+    .context-menu {
+      position: fixed;
+      z-index: 50;
+      min-width: 138px;
+      padding: 6px;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: #fff;
+      box-shadow: 0 12px 28px rgba(15, 23, 42, 0.16);
+      display: none;
+    }
+    .context-menu.open { display: block; }
+    .context-menu button {
+      width: 100%;
+      height: 32px;
+      border: 0;
+      border-radius: 6px;
+      text-align: left;
+      padding: 0 10px;
+      background: transparent;
+      font-size: 13px;
+    }
+    .context-menu button:hover { background: var(--brand-soft); }
+    .context-menu button.danger { color: var(--bad); }
+    .context-menu button.danger:hover { background: var(--delete-bg); }
+    .remix-drop-indicator {
+      width: 3px;
+      background: #f1b44c;
+      border-radius: 2px;
+      flex-shrink: 0;
+      align-self: stretch;
+    }
+    .remix-actions {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .remix-script {
+      margin-top: 10px;
+      max-height: 132px;
+      overflow: auto;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      padding: 8px;
+      background: #fff;
+      color: #374151;
+      font-size: 12px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      display: none;
+    }
+    .remix-script.expanded { display: block; }
+    .remix-shell.collapsed .remix-track,
+    .remix-shell.collapsed .remix-actions,
+    .remix-shell.collapsed .remix-script,
+    .remix-shell.collapsed #remixStatus { display: none; }
+    .timeline-shell.collapsed { display: none; }
+    .stats.collapsed { display: none; }
+    .remix-toggle {
+      font-size: 12px;
+      border: 0;
+      background: none;
+      color: var(--muted);
+      cursor: pointer;
+      padding: 0 4px;
+    }
+    .remix-toggle:hover { color: var(--brand); }
+    .segment-body { padding: 12px; }
+    .selected-card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fafbfc;
+      margin-bottom: 12px;
+    }
+    .selected-card { border-color: var(--active-line); background: var(--active-bg); }
+    .selected-card.disabled { border-color: var(--delete-line); background: var(--delete-bg); color: var(--delete-text); }
+    .segment-list { display: flex; flex-direction: column; gap: 8px; }
+    .segment-card {
+      width: 100%;
+      text-align: left;
+      border: 1px solid var(--active-line);
+      border-radius: 8px;
+      padding: 10px;
+      background: var(--active-bg);
+    }
+    .segment-card.disabled { border-color: var(--delete-line); background: var(--delete-bg); color: var(--delete-text); }
+    .segment-card.active { border-color: #f1b44c; box-shadow: inset 0 0 0 1px #f1b44c; }
+    .segment-top { display: flex; justify-content: space-between; gap: 8px; align-items: center; }
+    .time { font-size: 12px; font-weight: 700; color: var(--muted); }
+    .badge {
+      min-width: 46px;
+      text-align: center;
+      border-radius: 999px;
+      padding: 2px 8px;
+      font-size: 12px;
+      border: 1px solid var(--active-line);
+      color: var(--active);
+      background: #f4fbf7;
+    }
+    .badge.disabled {
+      color: var(--delete-text);
+      border-color: var(--delete-line);
+      background: #fff7f7;
+    }
+    .summary { margin-top: 8px; font-size: 13px; line-height: 1.5; }
+    .transcript {
+      margin-top: 8px;
+      font-size: 13px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      color: #374151;
+    }
+    .empty { padding: 24px; color: var(--muted); font-size: 14px; }
+    .status { font-size: 12px; color: var(--muted); }
+    @media (max-width: 1180px) {
+      .layout { grid-template-columns: 260px 1fr; height: auto; }
+      .segments { grid-column: 1 / -1; }
+      .sidebar-body, .editor-body, .segment-body { height: auto; max-height: none; }
+      .player-layout { grid-template-columns: 1fr; }
+      .stats { grid-template-columns: repeat(4, 1fr); }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Auto Cut 轨道审核台</h1>
+    <div id="headerMeta" class="status">加载中</div>
+  </header>
+  <main class="layout">
+    <section class="pane">
+      <div class="pane-title">素材批次 <button id="refreshBtn">刷新</button></div>
+      <div class="sidebar-body">
+        <div class="sidebar-section">
+          <div class="section-title">批次</div>
+          <div id="runList"></div>
+        </div>
+        <div class="sidebar-section">
+      </div>
+    </section>
+    <section class="pane">
+      <div class="pane-title"><span id="editorTitle">视频轨</span><span id="clipMeta" class="status"></span></div>
+      <div id="editor" class="editor-body"></div>
+    </section>
+    <section class="pane segments">
+      <div class="pane-title"><span>轨道详情</span><span id="pieceStatus" class="status"></span></div>
+      <div id="segmentPanel" class="segment-body"></div>
+    </section>
+  </main>
+  <div class="context-menu" id="remixContextMenu">
+    <button type="button" data-remix-menu-action="play">从此播放</button>
+    <button type="button" data-remix-menu-action="duplicate">复制片段</button>
+    <button type="button" class="danger" data-remix-menu-action="delete">删除片段</button>
+  </div>
+  <script>
+    const state = {
+      runs: [],
+      run: null,
+      timeline: null,
+      remix: null,
+      remixItems: [],
+      remixActiveItem: null,
+      remixPreviewEnd: null,
+      remixPlayingIndex: null,
+      piece: null,
+      skipDisabled: true,
+      sourceTrackZoom: 1,
+      _remixDragging: false,
+      _sourceDraggingPieceId: null,
+      _remixContextIndex: null
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const SOURCE_TRACK_MIN_ZOOM = 0.5;
+    const SOURCE_TRACK_MAX_ZOOM = 3;
+    const SOURCE_TRACK_ZOOM_STEP = 0.25;
+    const SOURCE_TRACK_BASE_PX_PER_SECOND = 18;
+    const SOURCE_TRACK_MIN_WIDTH = 42;
+    const SOURCE_TRACK_MAX_WIDTH = 420;
+
+    async function api(path, options) {
+      const res = await fetch(path, options);
+      if (!res.ok) throw new Error(await res.text());
+      return res.json();
+    }
+
+    function fileUrl(path) {
+      return `/media?path=${encodeURIComponent(path)}`;
+    }
+
+    function fmtTime(value) {
+      const seconds = Number(value || 0);
+      const m = Math.floor(seconds / 60);
+      const s = Math.floor(seconds % 60).toString().padStart(2, '0');
+      return `${m}:${s}`;
+    }
+
+    function escapeHtml(value) {
+      return String(value || '')
+        .replaceAll('&', '&amp;')
+        .replaceAll('<', '&lt;')
+        .replaceAll('>', '&gt;')
+        .replaceAll('"', '&quot;')
+        .replaceAll("'", '&#039;');
+    }
+
+    function clamp(value, min, max) {
+      return Math.max(min, Math.min(max, value));
+    }
+
+    function sourcePieceWidth(piece) {
+      const duration = Number(piece.duration || (Number(piece.local_end || 0) - Number(piece.local_start || 0)) || 0);
+      const scaled = Math.max(duration, 0.12) * SOURCE_TRACK_BASE_PX_PER_SECOND * state.sourceTrackZoom;
+      return Math.round(clamp(scaled, SOURCE_TRACK_MIN_WIDTH, SOURCE_TRACK_MAX_WIDTH));
+    }
+
+    function sourcePieceStyle(piece) {
+      const width = sourcePieceWidth(piece);
+      return `flex: 0 0 ${width}px; width: ${width}px;`;
+    }
+
+    function sourceZoomLabel() {
+      return `${Math.round(state.sourceTrackZoom * 100)}%`;
+    }
+
+    function adjustSourceTrackZoom(delta) {
+      const scroller = $('sourceTrackScroll');
+      const maxScrollBefore = scroller ? Math.max(1, scroller.scrollWidth - scroller.clientWidth) : 1;
+      const ratio = scroller ? scroller.scrollLeft / maxScrollBefore : 0;
+      const next = clamp(
+        Math.round((state.sourceTrackZoom + delta) * 100) / 100,
+        SOURCE_TRACK_MIN_ZOOM,
+        SOURCE_TRACK_MAX_ZOOM
+      );
+      if (next === state.sourceTrackZoom) return;
+      state.sourceTrackZoom = next;
+      applySourceTrackZoom(ratio);
+    }
+
+    function applySourceTrackZoom(scrollRatio) {
+      document.querySelectorAll('[data-piece]').forEach(btn => {
+        const piece = state.timeline && state.timeline.pieces.find(item => item.piece_id === btn.dataset.piece);
+        if (!piece) return;
+        const width = sourcePieceWidth(piece);
+        btn.style.flex = `0 0 ${width}px`;
+        btn.style.width = `${width}px`;
+      });
+      if ($('sourceZoomLabel')) $('sourceZoomLabel').textContent = sourceZoomLabel();
+      if ($('sourceZoomOutBtn')) $('sourceZoomOutBtn').disabled = state.sourceTrackZoom <= SOURCE_TRACK_MIN_ZOOM;
+      if ($('sourceZoomInBtn')) $('sourceZoomInBtn').disabled = state.sourceTrackZoom >= SOURCE_TRACK_MAX_ZOOM;
+      if (scrollRatio === undefined) return;
+      const scroller = $('sourceTrackScroll');
+      if (!scroller) return;
+      requestAnimationFrame(() => {
+        const maxScrollAfter = Math.max(0, scroller.scrollWidth - scroller.clientWidth);
+        scroller.scrollLeft = maxScrollAfter * scrollRatio;
+      });
+    }
+
+    function initSourceTrackScroll() {
+      const scroller = $('sourceTrackScroll');
+      if (!scroller) return;
+
+      scroller.addEventListener('wheel', (event) => {
+        if (scroller.scrollWidth <= scroller.clientWidth) return;
+        if (Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return;
+        scroller.scrollLeft += event.deltaY;
+        event.preventDefault();
+      }, { passive: false });
+
+      let startX = 0;
+      let startScrollLeft = 0;
+      let isPanning = false;
+
+      scroller.addEventListener('pointerdown', (event) => {
+        if (event.button !== 0 || event.target.closest('[data-piece]')) return;
+        isPanning = true;
+        startX = event.clientX;
+        startScrollLeft = scroller.scrollLeft;
+        scroller.classList.add('panning');
+        scroller.setPointerCapture(event.pointerId);
+      });
+
+      scroller.addEventListener('pointermove', (event) => {
+        if (!isPanning) return;
+        scroller.scrollLeft = startScrollLeft - (event.clientX - startX);
+      });
+
+      const stopPanning = (event) => {
+        if (!isPanning) return;
+        isPanning = false;
+        scroller.classList.remove('panning');
+        if (scroller.hasPointerCapture(event.pointerId)) {
+          scroller.releasePointerCapture(event.pointerId);
+        }
+      };
+      scroller.addEventListener('pointerup', stopPanning);
+      scroller.addEventListener('pointercancel', stopPanning);
+    }
+
+    function initRemixDrag() {
+      const track = $('remixTrack');
+      if (!track) return;
+
+      let dragIdx = -1;
+      let dropIdx = -1;
+
+      track.addEventListener('pointerdown', (e) => {
+        const piece = e.target.closest('[data-remix-idx]');
+        if (!piece || e.button !== 0) return;
+        dragIdx = parseInt(piece.dataset.remixIdx);
+        if (isNaN(dragIdx)) return;
+        state._remixDragging = false;
+        let hasMoved = false;
+        const startX = e.clientX;
+        const startY = e.clientY;
+        piece.setPointerCapture(e.pointerId);
+
+        const onMove = (ev) => {
+          if (!hasMoved) {
+            const distance = Math.hypot(ev.clientX - startX, ev.clientY - startY);
+            if (distance < 6) return;
+            hasMoved = true;
+            state._remixDragging = true;
+            piece.classList.add('dragging');
+          }
+          track.querySelectorAll('.remix-drop-indicator').forEach(el => el.remove());
+          const pieces = [...track.querySelectorAll('[data-remix-idx]')];
+          dropIdx = pieces.length;
+          for (let i = 0; i < pieces.length; i += 1) {
+            const rect = pieces[i].getBoundingClientRect();
+            if (ev.clientX < rect.left + rect.width / 2) {
+              dropIdx = i;
+              break;
+            }
+          }
+          const indicator = document.createElement('div');
+          indicator.className = 'remix-drop-indicator';
+          if (dropIdx < pieces.length) {
+            track.insertBefore(indicator, pieces[dropIdx]);
+          } else {
+            track.appendChild(indicator);
+          }
+        };
+
+        const onUp = () => {
+          piece.classList.remove('dragging');
+          track.querySelectorAll('.remix-drop-indicator').forEach(el => el.remove());
+          piece.removeEventListener('pointermove', onMove);
+          piece.removeEventListener('pointerup', onUp);
+          piece.removeEventListener('pointercancel', onCancel);
+
+          if (hasMoved && dropIdx >= 0 && dropIdx !== dragIdx && dropIdx !== dragIdx + 1) {
+            const items = [...state.remixItems];
+            const [moved] = items.splice(dragIdx, 1);
+            const insertAt = dropIdx > dragIdx ? dropIdx - 1 : dropIdx;
+            items.splice(insertAt, 0, moved);
+            items.forEach((item, i) => { item.order = i + 1; });
+            state.remixItems = items;
+            renderEditor();
+            renderSegmentPanel();
+            saveRemixOrder();
+          }
+          if (!hasMoved) {
+            selectRemixIndex(dragIdx, true);
+          }
+          setTimeout(() => { state._remixDragging = false; }, 30);
+          dragIdx = -1;
+          dropIdx = -1;
+        };
+
+        const onCancel = () => {
+          piece.classList.remove('dragging');
+          track.querySelectorAll('.remix-drop-indicator').forEach(el => el.remove());
+          piece.removeEventListener('pointermove', onMove);
+          piece.removeEventListener('pointerup', onUp);
+          piece.removeEventListener('pointercancel', onCancel);
+          state._remixDragging = false;
+          dragIdx = -1;
+          dropIdx = -1;
+        };
+
+        piece.addEventListener('pointermove', onMove);
+        piece.addEventListener('pointerup', onUp);
+        piece.addEventListener('pointercancel', onCancel);
+      });
+    }
+
+    function initSourcePieceDrag() {
+      const track = $('remixTrack');
+      if (!track) return;
+
+      document.querySelectorAll('[data-piece]').forEach(btn => {
+        btn.ondragstart = (e) => {
+          const piece = state.timeline && state.timeline.pieces.find(item => item.piece_id === btn.dataset.piece);
+          if (!piece) return;
+          state._sourceDraggingPieceId = piece.piece_id;
+          btn.classList.add('dragging');
+          e.dataTransfer.effectAllowed = 'copy';
+          e.dataTransfer.setData('application/x-autocut-source-piece', piece.piece_id);
+          e.dataTransfer.setData('text/plain', piece.piece_id);
+          if ($('remixStatus')) $('remixStatus').textContent = '拖到重排块中间替换，拖到边缘或空白处插入';
+        };
+        btn.ondragend = () => {
+          state._sourceDraggingPieceId = null;
+          btn.classList.remove('dragging');
+          track.classList.remove('drop-ready');
+        };
+      });
+
+      track.ondragover = (e) => {
+        const pieceId = state._sourceDraggingPieceId;
+        if (!pieceId) return;
+        e.preventDefault();
+        e.dataTransfer.dropEffect = 'copy';
+        track.classList.add('drop-ready');
+      };
+      track.ondragleave = (e) => {
+        if (!track.contains(e.relatedTarget)) track.classList.remove('drop-ready');
+      };
+      track.ondrop = (e) => {
+        const pieceId = state._sourceDraggingPieceId || e.dataTransfer.getData('application/x-autocut-source-piece') || e.dataTransfer.getData('text/plain');
+        if (!pieceId) return;
+        e.preventDefault();
+        state._sourceDraggingPieceId = null;
+        track.classList.remove('drop-ready');
+        const position = remixDropPosition(track, e.clientX);
+        applySourcePieceToRemix(pieceId, position);
+      };
+    }
+
+    function remixDropPosition(track, clientX) {
+      const pieces = [...track.querySelectorAll('[data-remix-idx]')];
+      if (!pieces.length) return { mode: 'insert', index: 0 };
+      for (const piece of pieces) {
+        const rect = piece.getBoundingClientRect();
+        const idx = parseInt(piece.dataset.remixIdx);
+        if (clientX < rect.left + rect.width * 0.25) return { mode: 'insert', index: idx };
+        if (clientX <= rect.right - rect.width * 0.25) return { mode: 'replace', index: idx };
+        if (clientX <= rect.right) return { mode: 'insert', index: idx + 1 };
+      }
+      return { mode: 'insert', index: pieces.length };
+    }
+
+    function applySourcePieceToRemix(pieceId, position) {
+      if (!state.timeline) return;
+      const piece = state.timeline.pieces.find(item => item.piece_id === pieceId);
+      if (!piece) return;
+      const nextItem = sourcePieceToRemixItem(piece);
+      const items = [...(state.remixItems || [])];
+      const index = Math.max(0, Math.min(Number(position.index || 0), items.length));
+      if (position.mode === 'replace' && index < items.length) {
+        items[index] = nextItem;
+      } else {
+        items.splice(index, 0, nextItem);
+      }
+      items.forEach((item, i) => { item.order = i + 1; });
+      state.remixItems = items;
+      state.remixActiveItem = nextItem;
+      clearRemixPlayback();
+      renderEditor();
+      renderSegmentPanel();
+      saveRemixOrder();
+      if ($('remixStatus')) {
+        const action = position.mode === 'replace' ? '已替换' : '已插入';
+        $('remixStatus').textContent = `${action} · ${fmtTime(nextItem.start)}-${fmtTime(nextItem.end)} · ${nextItem.text || '原视频片段'}`;
+      }
+    }
+
+    function sourcePieceToRemixItem(piece) {
+      const start = Number(piece.start ?? piece.local_start ?? 0);
+      const end = Number(piece.end ?? piece.local_end ?? start);
+      const text = piece.transcript || piece.summary || piece.reason || `原视频 ${fmtTime(start)}-${fmtTime(end)}`;
+      return {
+        id: `manual_${piece.piece_id}_${Date.now()}`,
+        source_index: null,
+        start,
+        end,
+        duration: Math.max(0, end - start),
+        role: 'manual',
+        score: 0,
+        text,
+        raw_text: text,
+        clean_text: text,
+        manual_source: true,
+        source_piece_id: piece.piece_id
+      };
+    }
+
+    function serializeRemixItems(items) {
+      return (items || []).map((item, index) => ({
+        order: index + 1,
+        id: String(item.id || `manual_${index + 1}`),
+        source_index: Number.isInteger(item.source_index) ? item.source_index : null,
+        start: Number(item.start || 0),
+        end: Number(item.end || 0),
+        duration: Number(item.duration || Math.max(0, Number(item.end || 0) - Number(item.start || 0))),
+        role: item.role || 'manual',
+        score: Number(item.score || 0),
+        text: item.text || '',
+        raw_text: item.raw_text || item.text || '',
+        clean_text: item.clean_text || item.text || '',
+        manual_source: Boolean(item.manual_source),
+        source_piece_id: item.source_piece_id || ''
+      }));
+    }
+
+    async function saveRemixOrder() {
+      if (!state.run || !state.remixItems.length) return;
+      const ordered_ids = state.remixItems.map(item => item.id);
+      const items = serializeRemixItems(state.remixItems);
+      try {
+        await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/remix/reorder`, {
+          method: 'PATCH',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ordered_ids, items })
+        });
+        if ($('remixStatus')) $('remixStatus').textContent = `已保存 · ${state.remixItems.length} 段`;
+      } catch (err) {
+        if ($('remixStatus')) $('remixStatus').textContent = `保存失败: ${err.message}`;
+      }
+    }
+
+    async function loadRuns() {
+      $('runList').innerHTML = '<div class="empty">加载中</div>';
+      const data = await api('/api/runs');
+      state.runs = data.runs || [];
+      $('headerMeta').textContent = `${state.runs.length} 个批次`;
+      renderRuns();
+      if (state.runs.length && !state.run) {
+        await selectRun(state.runs[0].id);
+      }
+    }
+
+    function renderRuns() {
+      if (!state.runs.length) {
+        $('runList').innerHTML = '<div class="empty">暂无处理结果</div>';
+        return;
+      }
+      $('runList').innerHTML = state.runs.map(run => `
+        <button class="run-item ${state.run && state.run.run_id === run.id ? 'active' : ''}" data-run="${escapeHtml(run.id)}">
+          <div class="item-title">${escapeHtml(run.id)}</div>
+          <div class="item-meta"><span>${run.candidate_count} 条</span><span>最高 ${run.best_score}</span></div>
+        </button>
+      `).join('');
+      document.querySelectorAll('[data-run]').forEach(btn => btn.onclick = () => selectRun(btn.dataset.run));
+    }
+
+    async function selectRun(runId) {
+      const run = await api(`/api/runs/${encodeURIComponent(runId)}`);
+      state.run = run;
+      state.timeline = null;
+      state.remix = null;
+      state.remixItems = [];
+      state.remixActiveItem = null;
+      state.remixPreviewEnd = null;
+      state.remixPlayingIndex = null;
+      state.piece = null;
+      renderRuns();
+      renderEditor();
+      renderSegmentPanel();
+      state.timeline = await api(`/api/runs/${encodeURIComponent(runId)}/timeline`);
+      state.remix = await api(`/api/runs/${encodeURIComponent(runId)}/remix?target_duration=25`);
+      state.remixItems = (state.remix.default_plan && state.remix.default_plan.items) ? [...state.remix.default_plan.items] : [];
+      state.remixActiveItem = null;
+      state.remixPreviewEnd = null;
+      state.remixPlayingIndex = null;
+      state.piece = state.timeline.pieces.find(piece => piece.enabled) || state.timeline.pieces[0] || null;
+      renderEditor();
+      renderSegmentPanel();
+    }
+
+    function renderEditor() {
+      if (!state.timeline) {
+        $('editorTitle').textContent = state.run ? '完整视频轨' : '视频轨';
+        $('clipMeta').textContent = '';
+        $('editor').innerHTML = '<div class="empty">请选择处理批次</div>';
+        return;
+      }
+      const timeline = state.timeline;
+      $('editorTitle').textContent = '完整视频轨';
+      $('clipMeta').textContent = `启用 ${Number(timeline.enabled_duration || 0).toFixed(1)}s / 禁用 ${Number(timeline.disabled_duration || 0).toFixed(1)}s`;
+      const pieces = timeline.pieces || [];
+      $('editor').innerHTML = `
+        <div class="player-layout">
+          <div class="player-shell">
+            <video id="player" src="${timeline.video_path ? fileUrl(timeline.video_path) : ''}" controls preload="metadata"></video>
+          </div>
+          <div class="stats" id="mainStats">
+            <div class="stat">轨道段数<strong>${timeline.piece_count}</strong></div>
+            <div class="stat">启用时长<strong>${Number(timeline.enabled_duration || 0).toFixed(1)}s</strong></div>
+            <div class="stat">禁用时长<strong>${Number(timeline.disabled_duration || 0).toFixed(1)}s</strong></div>
+            <div class="stat">模型评分<strong>${timeline.score}</strong></div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <button class="primary" id="playEnabledBtn">播放启用片段</button>
+          <button id="playOriginalBtn">播放原片</button>
+          <button class="${state.piece && state.piece.enabled ? 'bad' : 'good'}" id="togglePieceBtn">${state.piece && state.piece.enabled ? '禁用当前段' : '启用当前段'}</button>
+          <button id="replayPieceBtn">播放当前段</button>
+          <button id="exportBtn">导出完整轨</button>
+        </div>
+        <div class="timeline-shell" id="mainTimeline">
+          <div class="timeline-head">
+            <span>完整原视频</span>
+            <div class="track-head-actions">
+              <span>${fmtTime(timeline.start_time)} - ${fmtTime(timeline.end_time)}</span>
+              <div class="track-zoom" aria-label="片段宽度">
+                <button type="button" id="sourceZoomOutBtn" title="缩窄片段">-</button>
+                <span id="sourceZoomLabel">${sourceZoomLabel()}</span>
+                <button type="button" id="sourceZoomInBtn" title="放大片段">+</button>
+              </div>
+            </div>
+          </div>
+          <div class="track-scroll" id="sourceTrackScroll">
+            <div class="track" id="sourceTrack">
+              ${pieces.map(piece => `
+                <button class="piece ${piece.enabled ? '' : 'disabled'} ${state.piece && state.piece.piece_id === piece.piece_id ? 'active' : ''}"
+                  data-piece="${escapeHtml(piece.piece_id)}"
+                  draggable="true"
+                  style="${sourcePieceStyle(piece)}"
+                  title="${escapeHtml(piece.transcript || piece.summary || piece.reason)}">
+                  <span>${escapeHtml(piece.summary || piece.reason)}</span>
+                </button>
+              `).join('')}
+            </div>
+          </div>
+        </div>
+        ${renderRemixBox()}
+      `;
+
+      const player = $('player');
+      player.ontimeupdate = handlePlaybackProgress;
+      document.querySelectorAll('[data-piece]').forEach(btn => {
+        btn.onclick = () => {
+          selectPiece(btn.dataset.piece, true);
+        };
+      });
+      document.querySelectorAll('[data-remix-id]').forEach(btn => {
+        btn.onclick = () => {
+          if (state._remixDragging) return;
+          const idx = parseInt(btn.dataset.remixIdx);
+          const item = state.remixItems[idx];
+          if (!item) return;
+          state.remixPlayingIndex = null;
+          state.remixPreviewEnd = null;
+          setActiveRemixItem(idx, true);
+        };
+        btn.oncontextmenu = (event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          const idx = parseInt(btn.dataset.remixIdx);
+          if (isNaN(idx) || !state.remixItems[idx]) return;
+          state.remixPlayingIndex = null;
+          state.remixPreviewEnd = null;
+          setActiveRemixItem(idx, true);
+          showRemixContextMenu(idx, event.clientX, event.clientY);
+        };
+      });
+      $('playEnabledBtn').onclick = playEnabled;
+      $('playOriginalBtn').onclick = playOriginal;
+      $('togglePieceBtn').onclick = toggleSelectedPiece;
+      $('exportBtn').onclick = exportVideo;
+      $('sourceZoomOutBtn').onclick = () => adjustSourceTrackZoom(-SOURCE_TRACK_ZOOM_STEP);
+      $('sourceZoomInBtn').onclick = () => adjustSourceTrackZoom(SOURCE_TRACK_ZOOM_STEP);
+      if ($('localRemixBtn')) $('localRemixBtn').onclick = quickBuildRemix;
+      if ($('llmRemixBtn')) $('llmRemixBtn').onclick = smartBuildRemix;
+      if ($('deleteRemixItemBtn')) $('deleteRemixItemBtn').onclick = deleteSelectedRemixItem;
+      if ($('exportRemixVideoBtn')) $('exportRemixVideoBtn').onclick = exportRemixVideo;
+      if ($('copyPromptBtn')) $('copyPromptBtn').onclick = copyRemixPrompt;
+      if ($('playRemixPieceBtn')) $('playRemixPieceBtn').onclick = playRemixSequence;
+      if ($('toggleScriptBtn')) $('toggleScriptBtn').onclick = () => {
+        const script = $('remixScript');
+        if (script) script.classList.toggle('expanded');
+      };
+      if ($('remixCollapseBtn')) $('remixCollapseBtn').onclick = () => {
+        const shell = $('remixShell');
+        if (!shell) return;
+        const collapsed = shell.classList.toggle('collapsed');
+        $('remixCollapseBtn').textContent = collapsed ? '展开' : '折叠';
+      };
+      $('replayPieceBtn').onclick = () => {
+        seekToPiece(true);
+      };
+      applySourceTrackZoom();
+      initSourceTrackScroll();
+      initRemixDrag();
+      initSourcePieceDrag();
+    }
+
+    function renderRemixBox() {
+      const remix = state.remix;
+      if (!remix) return '';
+      const items = state.remixItems || [];
+      const totalDuration = items.reduce((sum, item) => sum + (item.duration || 0), 0);
+      const usable = (remix.units || []).filter(item => !item.excluded).length;
+      const filtered = (remix.units || []).filter(item => item.excluded).length;
+      return `
+        <div class="remix-shell" id="remixShell">
+          <div class="timeline-head">
+            <span>成片预览 <button class="remix-toggle" id="remixCollapseBtn">折叠</button></span>
+            <span>${totalDuration.toFixed(1)}s · ${items.length} 段</span>
+          </div>
+          <div class="remix-track" id="remixTrack">
+            ${items.map((item, idx) => `
+              <button class="remix-piece ${item.manual_source ? 'manual-source' : ''} ${state.remixActiveItem && state.remixActiveItem.id === item.id ? 'active' : ''}"
+                data-remix-idx="${idx}" data-remix-id="${escapeHtml(item.id)}"
+                style="flex: ${Math.max(item.duration, 0.12)} 1 0;"
+                title="${escapeHtml(item.text || '')}&#10;源: ${fmtTime(item.start)}-${fmtTime(item.end)}">
+                <span>${escapeHtml(item.text ? (item.text.length > 12 ? item.text.slice(0, 12) + '…' : item.text) : item.id)}</span>
+              </button>
+            `).join('')}
+          </div>
+          <div class="remix-actions">
+            <button id="playRemixPieceBtn">播放</button>
+            <button id="deleteRemixItemBtn" class="bad">删除片段</button>
+            <button id="llmRemixBtn" class="primary">智能成片</button>
+            <button id="localRemixBtn">快速成片</button>
+            <button id="exportRemixVideoBtn">导出成片</button>
+            <button id="copyPromptBtn">复制提示词</button>
+            <button id="toggleScriptBtn">查看文案</button>
+          </div>
+          <div id="remixStatus" class="status" style="margin-top:8px;">可用 ${usable} / 过滤 ${filtered} · 可从完整原视频拖拽片段到此替换或插入</div>
+          <div class="remix-script" id="remixScript">${escapeHtml((state.remixItems || []).map(item => item.text).join('\n') || '')}</div>
+        </div>
+      `;
+    }
+
+    function renderSegmentPanel() {
+      if (!state.timeline) {
+        $('pieceStatus').textContent = '';
+        $('segmentPanel').innerHTML = '<div class="empty">暂无轨道数据</div>';
+        return;
+      }
+      const piece = state.piece;
+      $('pieceStatus').textContent = piece ? (piece.enabled ? '启用' : '禁用') : '';
+      const selected = piece ? `
+        <div class="selected-card ${piece.enabled ? '' : 'disabled'}">
+          <div class="segment-top">
+            <strong>${fmtTime(piece.local_start)} - ${fmtTime(piece.local_end)}</strong>
+            <span class="badge ${piece.enabled ? '' : 'disabled'}">${piece.enabled ? '启用' : '禁用'}</span>
+          </div>
+          <div class="summary">${escapeHtml(piece.reason)}</div>
+          ${piece.transcript ? `<div class="transcript">${escapeHtml(piece.transcript)}</div>` : ''}
+        </div>
+      ` : '';
+      $('segmentPanel').innerHTML = `
+        ${selected}
+        <div class="segment-list">
+          ${(state.timeline.pieces || []).map(item => `
+            <button class="segment-card ${item.enabled ? '' : 'disabled'} ${piece && piece.piece_id === item.piece_id ? 'active' : ''}" data-segment="${escapeHtml(item.piece_id)}">
+              <div class="segment-top">
+                <span class="time">${fmtTime(item.local_start)} - ${fmtTime(item.local_end)} · ${Number(item.duration).toFixed(1)}s</span>
+                <span class="badge ${item.enabled ? '' : 'disabled'}">${item.enabled ? '启用' : '禁用'}</span>
+              </div>
+              <div class="summary">${escapeHtml(item.transcript || item.summary || item.reason)}</div>
+              ${item.transcript && item.summary && item.transcript !== item.summary ? `<div class="transcript">${escapeHtml(item.transcript)}</div>` : ''}
+            </button>
+          `).join('')}
+        </div>
+      `;
+      document.querySelectorAll('[data-segment]').forEach(btn => {
+        btn.onclick = () => selectPiece(btn.dataset.segment, true);
+      });
+    }
+
+    function selectPiece(pieceId, shouldSeek) {
+      if (!state.timeline) return;
+      const piece = state.timeline.pieces.find(item => item.piece_id === pieceId);
+      if (!piece) return;
+      state.piece = piece;
+      markActivePieces();
+      renderSegmentPanel();
+      if (shouldSeek) seekToPiece(false);
+    }
+
+    function markActivePieces() {
+      const activeId = state.piece && state.piece.piece_id;
+      document.querySelectorAll('[data-piece]').forEach(btn => btn.classList.toggle('active', btn.dataset.piece === activeId));
+      document.querySelectorAll('[data-segment]').forEach(btn => btn.classList.toggle('active', btn.dataset.segment === activeId));
+    }
+
+    function clearRemixPlayback() {
+      state.remixPreviewEnd = null;
+      state.remixPlayingIndex = null;
+    }
+
+    function selectRemixIndex(index, updateStatus) {
+      const item = (state.remixItems || [])[index];
+      if (!item) return null;
+      state.remixPlayingIndex = null;
+      state.remixPreviewEnd = null;
+      return setActiveRemixItem(index, updateStatus);
+    }
+
+    function setActiveRemixItem(index, updateStatus) {
+      const item = (state.remixItems || [])[index];
+      if (!item) return null;
+      state.remixActiveItem = item;
+      document.querySelectorAll('[data-remix-id]').forEach(btn => btn.classList.toggle('active', btn.dataset.remixIdx === String(index)));
+      if (updateStatus && $('remixStatus')) {
+        $('remixStatus').textContent = `已选中 ${item.id} · ${Number(item.duration || 0).toFixed(1)}s · 源: ${fmtTime(item.start)}-${fmtTime(item.end)}`;
+      }
+      return item;
+    }
+
+    function remixStartIndex() {
+      const items = state.remixItems || [];
+      if (!items.length) return -1;
+      if (!state.remixActiveItem) return 0;
+      const index = items.findIndex(item => item.id === state.remixActiveItem.id);
+      return index >= 0 ? index : 0;
+    }
+
+    function playRemixSequence() {
+      const startIndex = remixStartIndex();
+      if (startIndex < 0) {
+        if ($('remixStatus')) $('remixStatus').textContent = '暂无可播放的重排片段';
+        return;
+      }
+      playRemixItemAt(startIndex);
+    }
+
+    function playRemixItemAt(index) {
+      const player = $('player');
+      const item = setActiveRemixItem(index, false);
+      if (!player || !item) return;
+      state.skipDisabled = false;
+      state.remixPlayingIndex = index;
+      state.remixPreviewEnd = item.end;
+      player.currentTime = Math.max(0, Number(item.start || 0) + 0.01);
+      player.play();
+      if ($('remixStatus')) {
+        $('remixStatus').textContent = `播放 ${index + 1}/${state.remixItems.length} · ${item.id} · ${Number(item.duration || 0).toFixed(1)}s`;
+      }
+    }
+
+    function deleteSelectedRemixItem() {
+      const items = state.remixItems || [];
+      if (!items.length) {
+        if ($('remixStatus')) $('remixStatus').textContent = '成片预览暂无片段';
+        return;
+      }
+      const selectedIndex = state.remixActiveItem
+        ? items.findIndex(item => item.id === state.remixActiveItem.id)
+        : -1;
+      if (selectedIndex < 0) {
+        if ($('remixStatus')) $('remixStatus').textContent = '请先点击成片预览里的片段，再删除';
+        return;
+      }
+      deleteRemixItemAt(selectedIndex);
+    }
+
+    function deleteRemixItemAt(index) {
+      const items = state.remixItems || [];
+      if (index < 0 || index >= items.length) return;
+      const [removed] = items.splice(index, 1);
+      items.forEach((item, i) => { item.order = i + 1; });
+      state.remixItems = items;
+      state.remixActiveItem = items[Math.min(index, items.length - 1)] || null;
+      clearRemixPlayback();
+      renderEditor();
+      renderSegmentPanel();
+      saveRemixOrder();
+      if ($('remixStatus')) {
+        $('remixStatus').textContent = `已删除 · ${removed ? (removed.text || removed.id) : ''}`;
+      }
+    }
+
+    function duplicateRemixItemAt(index) {
+      const items = state.remixItems || [];
+      const item = items[index];
+      if (!item) return;
+      const copy = {
+        ...item,
+        id: `${item.id}_copy_${Date.now()}`,
+        order: index + 2
+      };
+      items.splice(index + 1, 0, copy);
+      items.forEach((entry, i) => { entry.order = i + 1; });
+      state.remixItems = items;
+      state.remixActiveItem = copy;
+      clearRemixPlayback();
+      renderEditor();
+      renderSegmentPanel();
+      saveRemixOrder();
+      if ($('remixStatus')) $('remixStatus').textContent = `已复制 · ${copy.text || copy.id}`;
+    }
+
+    function showRemixContextMenu(index, x, y) {
+      const menu = $('remixContextMenu');
+      if (!menu) return;
+      state._remixContextIndex = index;
+      menu.classList.add('open');
+      const width = menu.offsetWidth || 138;
+      const height = menu.offsetHeight || 108;
+      const left = Math.min(x, window.innerWidth - width - 8);
+      const top = Math.min(y, window.innerHeight - height - 8);
+      menu.style.left = `${Math.max(8, left)}px`;
+      menu.style.top = `${Math.max(8, top)}px`;
+    }
+
+    function hideRemixContextMenu() {
+      const menu = $('remixContextMenu');
+      if (!menu) return;
+      menu.classList.remove('open');
+      state._remixContextIndex = null;
+    }
+
+    function handleRemixContextAction(action) {
+      const index = state._remixContextIndex;
+      hideRemixContextMenu();
+      if (index === null || index < 0) return;
+      if (action === 'delete') {
+        deleteRemixItemAt(index);
+      } else if (action === 'duplicate') {
+        duplicateRemixItemAt(index);
+      } else if (action === 'play') {
+        playRemixItemAt(index);
+      }
+    }
+
+    function seekToPiece(play) {
+      const player = $('player');
+      if (!player || !state.piece) return;
+      clearRemixPlayback();
+      player.currentTime = Math.max(0, state.piece.local_start + 0.01);
+      if (play) player.play();
+    }
+
+    function playEnabled() {
+      const player = $('player');
+      if (!player || !state.timeline) return;
+      const current = currentPieceAt(player.currentTime);
+      const piece = current && current.enabled ? current : nextEnabledAfter(player.currentTime) || firstEnabledPiece();
+      if (!piece) return;
+      clearRemixPlayback();
+      state.skipDisabled = true;
+      state.piece = piece;
+      player.currentTime = piece.local_start + 0.01;
+      player.play();
+      markActivePieces();
+      renderSegmentPanel();
+    }
+
+    function playOriginal() {
+      const player = $('player');
+      if (!player) return;
+      clearRemixPlayback();
+      state.skipDisabled = false;
+      player.play();
+    }
+
+    async function toggleSelectedPiece() {
+      if (!state.run || !state.piece) return;
+      const enabled = !state.piece.enabled;
+      await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/timeline/${encodeURIComponent(state.piece.piece_id)}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled })
+      });
+      state.piece.enabled = enabled;
+      state.timeline.enabled_duration = state.timeline.pieces.filter(item => item.enabled).reduce((sum, item) => sum + item.duration, 0);
+      state.timeline.disabled_duration = state.timeline.pieces.filter(item => !item.enabled).reduce((sum, item) => sum + item.duration, 0);
+      renderEditor();
+      renderSegmentPanel();
+      seekToPiece(false);
+    }
+
+    async function exportVideo() {
+      if (!state.run) return;
+      const btn = $('exportBtn');
+      btn.disabled = true;
+      btn.textContent = '导出中';
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/export`, { method: 'POST' });
+        btn.textContent = '已导出';
+        $('pieceStatus').innerHTML = result.url ? `<a href="${result.url}" target="_blank">完整轨视频 ${Number(result.duration || 0).toFixed(1)}s</a>` : '已导出';
+      } catch (err) {
+        btn.textContent = '导出失败';
+        $('pieceStatus').textContent = err.message;
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '导出完整轨';
+        }, 1600);
+      }
+    }
+
+    async function smartBuildRemix() {
+      if (!state.run) return;
+      const btn = $('llmRemixBtn');
+      const status = $('remixStatus');
+      if (!btn || !status) return;
+      btn.disabled = true;
+      btn.textContent = '生成中';
+      status.textContent = '正在调用模型生成成片预览';
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/remix/llm`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            stream: false,
+            target_duration: 25
+          })
+        });
+        if (result.items && result.items.length) {
+          state.remixItems = result.items;
+          state.remixActiveItem = state.remixItems[0] || null;
+          clearRemixPlayback();
+          renderEditor();
+          renderSegmentPanel();
+          saveRemixOrder();
+        }
+        const liveStatus = $('remixStatus') || status;
+        liveStatus.textContent = `智能成片完成 · ${Number(result.duration || 0).toFixed(1)}s · ${state.remixItems.length} 段`;
+        btn.textContent = '已生成';
+      } catch (err) {
+        status.textContent = err.message;
+        btn.textContent = '生成失败';
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '智能成片';
+        }, 1600);
+      }
+    }
+
+    function quickBuildRemix() {
+      if (!state.remix || !state.remix.default_plan) return;
+      const items = state.remix.default_plan.items || [];
+      state.remixItems = items.map(item => ({ ...item }));
+      state.remixActiveItem = state.remixItems[0] || null;
+      clearRemixPlayback();
+      renderEditor();
+      renderSegmentPanel();
+      saveRemixOrder();
+      if ($('remixStatus')) {
+        $('remixStatus').textContent = `快速成片完成 · ${Number(state.remix.default_plan.duration || 0).toFixed(1)}s · ${state.remixItems.length} 段`;
+      }
+    }
+
+    async function exportRemixVideo() {
+      if (!state.run) return;
+      const btn = $('exportRemixVideoBtn');
+      const status = $('remixStatus');
+      if (!btn || !status) return;
+      if (!state.remixItems.length) {
+        status.textContent = '成片预览暂无片段，无法导出';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '导出中';
+      status.textContent = '正在导出当前成片预览';
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/remix/export`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_duration: 25,
+            items: serializeRemixItems(state.remixItems)
+          })
+        });
+        status.innerHTML = result.url ? `<a href="${result.url}" target="_blank">成片视频 ${Number(result.duration || 0).toFixed(1)}s</a>` : '成片已导出';
+        btn.textContent = '已导出';
+      } catch (err) {
+        status.textContent = err.message;
+        btn.textContent = '导出失败';
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '导出成片';
+        }, 1600);
+      }
+    }
+
+    async function copyRemixPrompt() {
+      if (!state.remix) return;
+      await navigator.clipboard.writeText(state.remix.prompt || '');
+      $('remixStatus').textContent = '提示词已复制';
+    }
+
+    function handlePlaybackProgress() {
+      const player = $('player');
+      if (!player || !state.timeline) return;
+      if (state.remixPlayingIndex !== null && !player.paused) {
+        const item = (state.remixItems || [])[state.remixPlayingIndex];
+        if (!item) {
+          player.pause();
+          clearRemixPlayback();
+          return;
+        }
+        if (player.currentTime >= Number(item.end || 0) - 0.08) {
+          const nextIndex = state.remixPlayingIndex + 1;
+          if (nextIndex < (state.remixItems || []).length) {
+            playRemixItemAt(nextIndex);
+          } else {
+            player.pause();
+            clearRemixPlayback();
+            if ($('remixStatus')) $('remixStatus').textContent = `播放完成 · ${state.remixItems.length} 段`;
+          }
+          return;
+        }
+      }
+      if (state.remixPreviewEnd !== null && state.remixPlayingIndex === null && !player.paused && player.currentTime >= state.remixPreviewEnd - 0.08) {
+        player.pause();
+        state.remixPreviewEnd = null;
+        return;
+      }
+      const piece = currentPieceAt(player.currentTime);
+      if (piece && (!state.piece || state.piece.piece_id !== piece.piece_id)) {
+        state.piece = piece;
+        markActivePieces();
+        renderSegmentPanel();
+      }
+      if (!state.skipDisabled || player.paused) return;
+      if (!piece || !piece.enabled || player.currentTime >= piece.local_end - 0.04) {
+        const next = nextEnabledAfter(player.currentTime + 0.04);
+        if (next) {
+          state.piece = next;
+          player.currentTime = next.local_start + 0.01;
+          markActivePieces();
+          renderSegmentPanel();
+        } else {
+          player.pause();
+          state.skipDisabled = false;
+        }
+      }
+    }
+
+    function currentPieceAt(time) {
+      if (!state.timeline) return null;
+      return state.timeline.pieces.find(piece => time >= piece.local_start && time < piece.local_end) || null;
+    }
+
+    function nextEnabledAfter(time) {
+      if (!state.timeline) return null;
+      return state.timeline.pieces.find(piece => piece.enabled && piece.local_end > time && piece.local_start >= time - 0.02) || null;
+    }
+
+    function firstEnabledPiece() {
+      return state.timeline && state.timeline.pieces.find(piece => piece.enabled);
+    }
+
+    function seekToTime(time, play) {
+      const player = $('player');
+      if (!player) return;
+      player.currentTime = Math.max(0, Number(time || 0) + 0.01);
+      if (play) player.play();
+    }
+
+
+    $('refreshBtn').onclick = loadRuns;
+    $('remixContextMenu').onclick = (event) => {
+      const action = event.target && event.target.dataset ? event.target.dataset.remixMenuAction : '';
+      if (!action) return;
+      event.preventDefault();
+      event.stopPropagation();
+      handleRemixContextAction(action);
+    };
+    document.addEventListener('click', (event) => {
+      if ($('remixContextMenu') && $('remixContextMenu').contains(event.target)) return;
+      hideRemixContextMenu();
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') hideRemixContextMenu();
+    });
+    window.addEventListener('resize', hideRemixContextMenu);
+    window.addEventListener('scroll', hideRemixContextMenu, true);
+    loadRuns().catch(err => {
+      $('runList').innerHTML = `<div class="empty">${escapeHtml(err.message)}</div>`;
+    });
+  </script>
+</body>
+</html>
