@@ -108,12 +108,21 @@ class FasterWhisperEngine:
 
         resolved_model = self._resolve_local_model(self.model_size)
         model = WhisperModel(resolved_model, device=self.device, compute_type=self.compute_type)
+        # VAD 档位 A（温和细化）：默认 min_silence=2000ms 太粗，直播口播
+        # 整段都被合在一起；调成 700ms 让换气停顿能切开，单段不超过 15 秒。
+        vad_parameters = {
+            "min_silence_duration_ms": 700,
+            "min_speech_duration_ms": 250,
+            "max_speech_duration_s": 15,
+            "speech_pad_ms": 300,
+        }
         segments, _ = model.transcribe(
             str(audio_path),
             language=language,
             beam_size=self.beam_size,
             word_timestamps=True,
             vad_filter=True,
+            vad_parameters=vad_parameters,
             initial_prompt=terms_to_prompt(asr_terms or []) or None,
             hotwords=terms_to_hotwords(asr_terms or []) or None,
         )
