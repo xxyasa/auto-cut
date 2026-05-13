@@ -4,6 +4,11 @@ services:
     image: autocut:latest
     container_name: autocut
     restart: unless-stopped
+    # 平台声明：
+    # - Apple Silicon (M1/M2/M3/M4) / Linux arm64 服务器：linux/arm64
+    # - Intel Mac / x86 Linux 服务器：linux/amd64
+    # 注释掉则由 Docker 自动判断（多数情况没问题），显式指定可避免架构歧义。
+    # platform: linux/arm64
     ports:
       - "8765:8765"
     environment:
@@ -22,11 +27,12 @@ services:
       - ./data/runs:/data/runs
       - ./data/uploads:/data/uploads
       - ./models:/models:ro          # 只读挂载，防止容器写坏模型文件
-    # ASR 用 CPU 跑，给够内存；如需 GPU 见下方注释
+    # ASR 用 CPU 跑，给够内存
+    # 16GB Mac 推荐 6g，24GB+ 可以给 8g
     deploy:
       resources:
         limits:
-          memory: 4g
+          memory: 6g
 
 # 如需 GPU 支持（需 nvidia-container-toolkit）：
 # 取消下面注释，并删除上方 deploy.resources 块
