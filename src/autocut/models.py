@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
@@ -14,6 +14,10 @@ def to_plain_dict(value: Any) -> Any:
         return {key: to_plain_dict(item) for key, item in value.items()}
     if hasattr(value, "__dataclass_fields__"):
         return to_plain_dict(asdict(value))
+    # 函数 / 方法 / 其他可调用对象不可 JSON 序列化，统一丢弃为 None
+    # （典型场景：PipelineRequest.on_progress 进度回调）
+    if callable(value):
+        return None
     return value
 
 
