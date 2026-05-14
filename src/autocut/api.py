@@ -7,7 +7,8 @@ from . import media as media_tools
 from .llm import LLMError, generate_ordered_ids
 from .models import PipelineRequest, to_plain_dict
 from .pipeline import LiveClipPipeline
-from .remix import build_remix_source, export_remix_plan, remix_plan_from_items, remix_plan_from_ordered_ids, write_remix_plan
+from .exporter import export_segments_zip
+from .remix import build_remix_source, export_remix_plan, remix_export_segments, remix_plan_from_items, remix_plan_from_ordered_ids, write_remix_plan
 
 try:
     from fastapi import HTTPException
@@ -216,7 +217,8 @@ def create_app():
         media_path = _safe_media_path(project_root, runs_root, path)
         if not media_path.exists() or not media_path.is_file():
             raise HTTPException(status_code=404, detail="file not found")
-        return FileResponse(media_path)
+        media_type = "application/zip" if media_path.suffix.lower() == ".zip" else None
+        return FileResponse(media_path, media_type=media_type)
 
     @app.patch("/api/runs/{run_id}/clips/{clip_id}/review")
     def review_clip(run_id: str, clip_id: str, payload: dict = Body(...)):
@@ -271,7 +273,7 @@ def create_app():
         return {"ok": True, "run_id": run_id, "piece_id": piece_id, "enabled": enabled}
 
     @app.post("/api/runs/{run_id}/export")
-    def export_run_timeline(run_id: str):
+    def export_run_timeline(run_id: str, format: str = Query("merged_mp4")):
         run_dir = _safe_run_dir(runs_root, run_id)
         result_path = run_dir / "metadata" / "result.json"
         if not result_path.exists():
@@ -282,26 +284,91 @@ def create_app():
         source_video = Path(timeline.get("video_path") or "").resolve()
         if not source_video.exists():
             raise HTTPException(status_code=404, detail="source video not found")
-        ranges = _merge_export_ranges(
-            [
-                {"start": piece["start"], "end": piece["end"]}
-                for piece in timeline.get("pieces", [])
-                if piece.get("enabled")
-            ]
-        )
-        if not ranges:
+        segments = [
+            {
+                "id": piece.get("piece_id", ""),
+                "start": piece["start"],
+                "end": piece["end"],
+                "summary": piece.get("summary") or piece.get("reason") or "",
+                "text": piece.get("transcript") or "",
+            }
+            for piece in timeline.get("pieces", [])
+            if piece.get("enabled")
+        ]
+        if not segments:
             raise HTTPException(status_code=400, detail="no enabled ranges to export")
         output_dir = run_dir / "exports"
+        if format == "segments_zip":
+            output_path = output_dir / f"{run_id}_enabled_segments.zip"
+            warning = export_segments_zip(source_video, output_path, segments)
+            if warning:
+                output_path.unlink(missing_ok=True)
+                raise HTTPException(status_code=500, detail=warning)
+            return {
+                "ok": True,
+                "format": "segments_zip",
+                "path": str(output_path),
+                "url": _media_url(str(output_path)),
+                "segment_count": len(segments),
+                "duration": round(sum(item["end"] - item["start"] for item in segments), 3),
+            }
+        if format != "merged_mp4":
+            raise HTTPException(status_code=400, detail=f"unsupported_export_format: {format}")
+        ranges = _merge_export_ranges([{"start": item["start"], "end": item["end"]} for item in segments])
         output_path = output_dir / f"{run_id}_enabled.mp4"
         warning = media_tools.export_clip_segments(source_video, output_path, ranges)
         if warning:
             raise HTTPException(status_code=500, detail=warning)
         return {
             "ok": True,
+            "format": "merged_mp4",
             "path": str(output_path),
             "url": _media_url(str(output_path)),
             "ranges": ranges,
             "duration": round(sum(item["end"] - item["start"] for item in ranges), 3),
+        }
+
+    @app.post("/api/runs/{run_id}/remix/export-segments")
+    def export_run_remix_segments(run_id: str, payload: RemixPayload | None = None):
+        payload = payload or RemixPayload()
+        run_dir = _safe_run_dir(runs_root, run_id)
+        result_path = run_dir / "metadata" / "result.json"
+        if not result_path.exists():
+            raise HTTPException(status_code=404, detail="result.json not found")
+        result = _read_json(result_path)
+        source_video = Path(result.get("media", {}).get("path") or "").resolve()
+        if not source_video.exists():
+            raise HTTPException(status_code=404, detail="source video not found")
+        if payload.items:
+            plan = remix_plan_from_items(payload.items, target_duration=payload.target_duration, strategy="manual_order")
+        else:
+            request = _read_json(run_dir / "metadata" / "request.json", default={})
+            remix_source = build_remix_source(result, request, target_duration=payload.target_duration)
+            if payload.ordered_ids:
+                plan = remix_plan_from_ordered_ids(
+                    remix_source["units"],
+                    payload.ordered_ids,
+                    target_duration=payload.target_duration,
+                )
+            else:
+                plan = remix_source["default_plan"]
+        segments = remix_export_segments(result, plan)
+        if not segments:
+            raise HTTPException(status_code=400, detail="no remix items to export")
+        output_dir = run_dir / "exports"
+        output_path = output_dir / f"{run_id}_remix_segments.zip"
+        warning = export_segments_zip(source_video, output_path, segments)
+        if warning:
+            output_path.unlink(missing_ok=True)
+            raise HTTPException(status_code=500, detail=warning)
+        return {
+            "ok": True,
+            "format": "segments_zip",
+            "path": str(output_path),
+            "url": _media_url(str(output_path)),
+            "segment_count": len(segments),
+            "duration": plan.get("duration"),
+            "items": plan.get("items", []),
         }
 
     @app.get("/api/runs/{run_id}/remix")

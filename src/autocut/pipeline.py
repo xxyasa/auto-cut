@@ -5,7 +5,7 @@ from pathlib import Path
 
 from . import media
 from .asr import create_asr_engine
-from .cleaning import clean_segments, trim_leading_fillers
+from .cleaning import clean_segments, trim_leading_fillers, trim_trailing_fillers
 from .exporter import export_pipeline_result
 from .lexicon import build_asr_terms, load_terms_file
 from .models import PipelineRequest, PipelineResult, to_plain_dict
@@ -71,6 +71,7 @@ class LiveClipPipeline:
         progress("评分与裁剪", 0.75)
         candidates = score_candidates(candidates, request.product, request.selling_points)
         candidates = trim_leading_fillers(candidates, transcript)
+        candidates = trim_trailing_fillers(candidates, transcript)
 
         progress("导出轨道文件", 0.80)
         result = PipelineResult(

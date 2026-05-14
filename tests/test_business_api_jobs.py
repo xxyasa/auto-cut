@@ -116,6 +116,24 @@ class JobsCreateTests(_Base):
         )
         self.assertEqual(resp.status_code, 400)
 
+    def test_plan_count_validation(self):
+        src = Path(self.uploads_dir) / "u.mp4"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"FAKE")
+
+        resp = self.client.post(
+            "/api/business/jobs",
+            json={
+                "source": {"type": "upload", "uploaded_path": str(src)},
+                "brand_product": {"product": "测试产品", "selling_points": ["卖点"]},
+                "tracks": ["remix"],
+                "remix": {"use_llm": True, "plan_count": 6},
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 422)
+
 
 class JobsExecutionTests(_Base):
     """跑 _execute_job 推进状态。runner 走真实 _make_runner，但 pipeline/remix 全 patch。"""
@@ -227,6 +245,40 @@ class JobsListAndLogTests(_Base):
         lines = resp.json()["lines"]
         self.assertGreaterEqual(len(lines), 1)
         self.assertTrue(any("hello world" in line for line in lines))
+
+
+class ArtifactRouteTests(_Base):
+    def test_remix_variant_zip_uses_matching_plan(self):
+        job_id = jobs.enqueue({}, lambda job: {}, tracks=["remix"])
+        run_dir = self.runs_dir / job_id
+        exports_dir = run_dir / "exports"
+        metadata_dir = run_dir / "metadata"
+        source = run_dir / "source.mp4"
+        metadata_dir.mkdir(parents=True, exist_ok=True)
+        exports_dir.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"source")
+        (metadata_dir / "result.json").write_text(
+            '{"media":{"path":"%s"},"transcript":[]}' % str(source).replace("\\", "\\\\"),
+            encoding="utf-8",
+        )
+        (metadata_dir / f"{job_id}_remix_25s_v2_plan.json").write_text(
+            '{"items":[{"id":"s002","start":2,"end":4,"text":"第二方案"}]}',
+            encoding="utf-8",
+        )
+
+        def fake_export_clip(_, segment_path, start, end):
+            segment_path.write_bytes(f"{start}-{end}".encode("utf-8"))
+            return None
+
+        with patch("autocut.exporter.media.export_clip", side_effect=fake_export_clip):
+            resp = self.client.get(
+                f"/api/business/jobs/{job_id}/artifacts/{job_id}_remix_v2_segments.zip",
+                headers=self.headers,
+            )
+
+        self.assertEqual(resp.status_code, 200, resp.text)
+        self.assertEqual(resp.headers["content-type"], "application/zip")
+        self.assertTrue((exports_dir / f"{job_id}_remix_v2_segments.zip").exists())
 
 
 if __name__ == "__main__":

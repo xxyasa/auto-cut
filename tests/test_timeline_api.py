@@ -1,4 +1,9 @@
 import unittest
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from unittest.mock import patch
+
+from fastapi.testclient import TestClient
 
 from autocut.api import _build_full_timeline, _operational_phrase_disabled_sources
 
@@ -130,6 +135,38 @@ class TimelineApiTests(unittest.TestCase):
         self.assertTrue(disabled)
         self.assertTrue(all(not piece["enabled"] for piece in disabled))
         self.assertTrue(all(piece["reason"] == "与产品介绍无关，默认不播放" for piece in disabled))
+
+    def test_export_run_timeline_segments_zip(self):
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            runs_dir = root / "runs"
+            run_dir = runs_dir / "demo"
+            metadata_dir = run_dir / "metadata"
+            source = root / "source.mp4"
+            metadata_dir.mkdir(parents=True)
+            source.write_bytes(b"source")
+            (metadata_dir / "result.json").write_text(
+                '{"media":{"duration":4,"path":"%s"},"transcript":[{"start":0,"end":2,"text":"大家好今天介绍第一段完整卖点"},{"start":2,"end":4,"text":"大家好这款产品第二段卖点也很完整"}],"candidates":[]}'
+                % str(source).replace("\\", "\\\\"),
+                encoding="utf-8",
+            )
+
+            def fake_export_clip(_, segment_path, start, end):
+                segment_path.write_bytes(f"{start}-{end}".encode("utf-8"))
+                return None
+
+            with patch.dict("os.environ", {"AUTOCUT_RUNS_DIR": str(runs_dir)}):
+                from autocut.api import create_app
+
+                client = TestClient(create_app())
+                with patch("autocut.exporter.media.export_clip", side_effect=fake_export_clip):
+                    response = client.post("/api/runs/demo/export?format=segments_zip")
+
+            self.assertEqual(response.status_code, 200, response.text)
+            body = response.json()
+            self.assertEqual(body["format"], "segments_zip")
+            self.assertEqual(body["segment_count"], 2)
+            self.assertTrue((run_dir / "exports" / "demo_enabled_segments.zip").exists())
 
 
 if __name__ == "__main__":

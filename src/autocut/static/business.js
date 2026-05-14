@@ -553,7 +553,7 @@ const apiOps = {
       },
       tracks: [],
       remix: {},
-      asr_engine: STATE.asrCombo ? STATE.asrCombo.getValue() : 'transcript'
+      asr_engine: STATE.asrCombo ? STATE.asrCombo.getValue() : 'glm-asr'
     };
     
     // Source
@@ -596,6 +596,7 @@ const apiOps = {
       payload.remix = {
         target_duration: parseFloat(document.getElementById('remix-duration').value),
         use_llm: document.getElementById('remix-use-llm').checked,
+        plan_count: Math.min(5, Math.max(1, parseInt(document.getElementById('remix-plan-count').value || '1', 10))),
         stream: false
       };
     }
@@ -771,22 +772,69 @@ function updateDetailView(job) {
   if (art.enabled_mp4) {
     const fn = utils.getFilename(art.enabled_mp4);
     const url = `/api/business/jobs/${job.id}/artifacts/${fn}`;
+    const zipUrl = `/api/business/jobs/${job.id}/artifacts/${job.id}_enabled_segments.zip`;
     document.getElementById('video-enabled').src = url;
     document.getElementById('link-enabled').href = url;
+    document.getElementById('link-enabled-zip').href = zipUrl;
     document.querySelector('.tab[data-detail-tab="enabled"]').style.display = 'block';
   } else {
     document.querySelector('.tab[data-detail-tab="enabled"]').style.display = 'none';
   }
   
-  if (art.remix_mp4) {
-    const fn = utils.getFilename(art.remix_mp4);
-    const url = `/api/business/jobs/${job.id}/artifacts/${fn}`;
-    document.getElementById('video-remix').src = url;
-    document.getElementById('link-remix').href = url;
+  const remixPlans = normalizeRemixPlans(job);
+  if (remixPlans.length > 0) {
+    renderRemixPlans(job.id, remixPlans);
     document.querySelector('.tab[data-detail-tab="remix"]').style.display = 'block';
   } else {
     document.querySelector('.tab[data-detail-tab="remix"]').style.display = 'none';
   }
+}
+
+function normalizeRemixPlans(job) {
+  const art = job.artifacts || {};
+  if (Array.isArray(art.remix_plans) && art.remix_plans.length > 0) {
+    return art.remix_plans;
+  }
+  if (art.remix_mp4) {
+    return [{ index: 1, label: '方案 1', mp4: art.remix_mp4 }];
+  }
+  return [];
+}
+
+function renderRemixPlans(jobId, plans) {
+  const container = document.getElementById('remix-plans-container');
+  if (!container) return;
+  container.innerHTML = '';
+  plans.forEach((plan, idx) => {
+    const mp4 = plan.mp4 || plan.video_path || '';
+    const fn = utils.getFilename(mp4);
+    if (!fn) return;
+    const url = `/api/business/jobs/${jobId}/artifacts/${fn}`;
+    const zipUrl = `/api/business/jobs/${jobId}/artifacts/${zipNameForRemixPlan(jobId, plan, idx)}`;
+    const card = document.createElement('div');
+    card.className = 'card';
+    card.style.padding = '12px';
+    card.innerHTML = `
+      <div class="flex justify-between items-center mb-2">
+        <strong>${plan.label || `方案 ${idx + 1}`}</strong>
+        <span class="text-sm text-muted">${plan.duration ? `${Number(plan.duration).toFixed(1)}s` : ''}${plan.duplicate ? ' · 可能重复' : ''}</span>
+      </div>
+      <div class="video-container"><video controls src="${url}"></video></div>
+      <a class="btn btn-secondary btn-sm text-center" href="${url}" target="_blank" download>合并下载 MP4</a>
+      <a class="btn btn-secondary btn-sm text-center" href="${zipUrl}" target="_blank" download>分开下载 ZIP</a>
+    `;
+    container.appendChild(card);
+  });
+}
+
+function zipNameForRemixPlan(jobId, plan, idx) {
+  if (plan.index && Number(plan.index) > 1) {
+    return `${jobId}_remix_v${Number(plan.index)}_segments.zip`;
+  }
+  if (idx > 0) {
+    return `${jobId}_remix_v${idx + 1}_segments.zip`;
+  }
+  return `${jobId}_remix_segments.zip`;
 }
 
 // ==========================================
@@ -798,6 +846,8 @@ function bindEvents() {
   tokenInput.addEventListener('change', (e) => {
     localStorage.setItem('autocut_api_token', e.target.value);
     STATE.token = e.target.value;
+    // 同步写入 cookie，供 <video>/<a> 等浏览器原生请求携带鉴权
+    document.cookie = `autocut_token=${encodeURIComponent(e.target.value)}; path=/; SameSite=Strict`;
     apiOps.loadBrands();
     apiOps.pollJobs();
   });
@@ -998,21 +1048,23 @@ function init() {
     placeholder: '-- 选择 ASR 引擎 --',
     searchable: false,
     options: [
-      { value: 'transcript', label: 'transcript (默认)' },
+      { value: 'transcript', label: 'transcript' },
       { value: 'faster-whisper', label: 'faster-whisper' },
       { value: 'funasr', label: 'funasr' },
-      { value: 'glm-asr', label: 'glm-asr (高精度)' },
+      { value: 'glm-asr', label: 'glm-asr (默认，高精度)' },
     ],
     onChange: value => {
       document.getElementById('transcript-path-wrap').classList.toggle('hidden', value !== 'transcript');
     },
   });
-  STATE.asrCombo.setValue('faster-whisper');
-  // faster-whisper 不显示 transcript-path
+  STATE.asrCombo.setValue('glm-asr');
+  // glm-asr 不显示 transcript-path
   document.getElementById('transcript-path-wrap').classList.add('hidden');
 
   bindEvents();
   if (STATE.token) {
+    // 页面加载时同步 cookie，确保 <video> 标签能直接访问受保护的 mp4
+    document.cookie = `autocut_token=${encodeURIComponent(STATE.token)}; path=/; SameSite=Strict`;
     apiOps.loadBrands();
     apiOps.pollJobs();
     STATE.pollTimer = setInterval(() => {

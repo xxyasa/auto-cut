@@ -94,6 +94,16 @@ INVALID_PATTERNS = [
     "点点关注",
 ]
 
+# 价格相关正则，命中内容从 clean_text 中抹除并打标
+PRICE_PATTERNS: list[re.Pattern[str]] = [
+    re.compile(r"\d+(\.\d+)?\s*[元块]"),               # 99元、59.9块
+    re.compile(r"[零一二三四五六七八九十百]+(折|打折)"),  # 八折、七折
+    re.compile(r"\d+\s*折"),                             # 8折、7.5折
+    re.compile(r"(原价|现价|促销价|特价|到手价|券后|活动价|日常价|底价|秒杀价)[^\s，。！？,!?]{0,20}"),
+    re.compile(r"买\s*\d+\s*(件|个|套)?\s*(送|赠|减|立减)\s*\d*"),  # 买X送Y
+    re.compile(r"\d+\s*(件|个|套)\s*\d+\s*[元块]"),       # 2件59元
+]
+
 
 def normalize_text(text: str) -> str:
     text = re.sub(r"\s+", " ", text).strip()
@@ -117,6 +127,13 @@ def clean_text(text: str) -> tuple[str, float, float, list[str]]:
         filler_chars += sum(len(match.group(0)) for match in matches)
         cleaned = pattern.sub("", cleaned)
 
+    # 价格内容过滤：从 clean_text 中抹除价格描述
+    price_chars = 0
+    for price_pattern in PRICE_PATTERNS:
+        price_matches = list(price_pattern.finditer(cleaned))
+        price_chars += sum(len(m.group(0)) for m in price_matches)
+        cleaned = price_pattern.sub("", cleaned)
+
     cleaned = normalize_text(cleaned)
     filler_ratio = min(1.0, filler_chars / max(1, len(normalized)))
     repeat_ratio = estimate_repeat_ratio(normalized)
@@ -129,6 +146,8 @@ def clean_text(text: str) -> tuple[str, float, float, list[str]]:
     for pattern in INVALID_PATTERNS:
         if pattern in normalized:
             invalid_reasons.append(f"invalid_pattern:{pattern}")
+    if price_chars > 0:
+        invalid_reasons.append("contains_price")
     if len(cleaned) < 8:
         invalid_reasons.append("too_short_after_cleaning")
 
@@ -182,10 +201,12 @@ def _is_leading_filler_word(word: str) -> bool:
 def trim_leading_fillers(
     candidates: list[CandidateClip],
     transcript: list[TranscriptSegment],
+    lead_padding: float = 0.05,
 ) -> list[CandidateClip]:
     """把每个候选片段开头连续的水词单字从时间上裁掉。
 
     仅调整 start_time，不拆分 segment。若整段都是水词则不裁（保留原样）。
+    lead_padding: 第一个实意词前保留的缓冲时间（秒），默认 50ms，避免切到字中间。
     """
     for candidate in candidates:
         if not candidate.segment_indexes:
@@ -200,15 +221,52 @@ def trim_leading_fillers(
             w = word_info.get("word", "")
             if _is_leading_filler_word(w):
                 continue
-            # 找到第一个非水词
-            new_start = float(word_info["start"])
+            # 找到第一个非水词，往前保留 lead_padding 秒缓冲
+            new_start = max(0.0, float(word_info["start"]) - lead_padding)
             break
 
         # new_start 为 None 说明整段都是水词，跳过
         if new_start is None:
             continue
-        # 只往后推，不往前缩
-        if new_start > candidate.start_time + 0.05:
+        # 只往后推（或缩短到 lead_padding 前），不往前缩
+        if new_start > candidate.start_time + 0.02:
             candidate.start_time = new_start
+
+    return candidates
+
+
+def trim_trailing_fillers(
+    candidates: list[CandidateClip],
+    transcript: list[TranscriptSegment],
+    trail_padding: float = 0.08,
+) -> list[CandidateClip]:
+    """把每个候选片段结尾连续的水词单字从时间上裁掉。
+
+    仅调整 end_time，不拆分 segment。若整段都是水词则不裁（保留原样）。
+    trail_padding: 最后一个实意词后保留的缓冲时间（秒），默认 80ms，避免切到字中间。
+    """
+    for candidate in candidates:
+        if not candidate.segment_indexes:
+            continue
+        last_seg = transcript[candidate.segment_indexes[-1]]
+        words = last_seg.words  # [{start, end, word}]
+        if not words:
+            continue
+
+        new_end: float | None = None
+        for word_info in reversed(words):
+            w = word_info.get("word", "")
+            if _is_leading_filler_word(w):
+                continue
+            # 找到最后一个非水词，往后保留 trail_padding 秒缓冲
+            new_end = float(word_info["end"]) + trail_padding
+            break
+
+        # new_end 为 None 说明整段都是水词，跳过
+        if new_end is None:
+            continue
+        # 只往前收缩，不往后延伸（不能超过原 end_time）
+        if new_end < candidate.end_time - 0.02:
+            candidate.end_time = new_end
 
     return candidates

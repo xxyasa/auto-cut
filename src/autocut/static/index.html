@@ -908,7 +908,8 @@
           <button id="playOriginalBtn">播放原片</button>
           <button class="${state.piece && state.piece.enabled ? 'bad' : 'good'}" id="togglePieceBtn">${state.piece && state.piece.enabled ? '禁用当前段' : '启用当前段'}</button>
           <button id="replayPieceBtn">播放当前段</button>
-          <button id="exportBtn">导出完整轨</button>
+          <button id="exportBtn">合并下载 MP4</button>
+          <button id="exportZipBtn">分开下载 ZIP</button>
         </div>
         <div class="timeline-shell" id="mainTimeline">
           <div class="timeline-head">
@@ -971,12 +972,14 @@
       $('playOriginalBtn').onclick = playOriginal;
       $('togglePieceBtn').onclick = toggleSelectedPiece;
       $('exportBtn').onclick = exportVideo;
+      $('exportZipBtn').onclick = exportSegmentsZip;
       $('sourceZoomOutBtn').onclick = () => adjustSourceTrackZoom(-SOURCE_TRACK_ZOOM_STEP);
       $('sourceZoomInBtn').onclick = () => adjustSourceTrackZoom(SOURCE_TRACK_ZOOM_STEP);
       if ($('localRemixBtn')) $('localRemixBtn').onclick = quickBuildRemix;
       if ($('llmRemixBtn')) $('llmRemixBtn').onclick = smartBuildRemix;
       if ($('deleteRemixItemBtn')) $('deleteRemixItemBtn').onclick = deleteSelectedRemixItem;
       if ($('exportRemixVideoBtn')) $('exportRemixVideoBtn').onclick = exportRemixVideo;
+      if ($('exportRemixZipBtn')) $('exportRemixZipBtn').onclick = exportRemixZip;
       if ($('copyPromptBtn')) $('copyPromptBtn').onclick = copyRemixPrompt;
       if ($('playRemixPieceBtn')) $('playRemixPieceBtn').onclick = playRemixSequence;
       if ($('toggleScriptBtn')) $('toggleScriptBtn').onclick = () => {
@@ -1026,7 +1029,8 @@
             <button id="deleteRemixItemBtn" class="bad">删除片段</button>
             <button id="llmRemixBtn" class="primary">智能成片</button>
             <button id="localRemixBtn">快速成片</button>
-            <button id="exportRemixVideoBtn">导出成片</button>
+            <button id="exportRemixVideoBtn">合并下载</button>
+            <button id="exportRemixZipBtn">分开下载</button>
             <button id="copyPromptBtn">复制提示词</button>
             <button id="toggleScriptBtn">查看文案</button>
           </div>
@@ -1292,7 +1296,27 @@
       } finally {
         setTimeout(() => {
           btn.disabled = false;
-          btn.textContent = '导出完整轨';
+          btn.textContent = '合并下载 MP4';
+        }, 1600);
+      }
+    }
+
+    async function exportSegmentsZip() {
+      if (!state.run) return;
+      const btn = $('exportZipBtn');
+      btn.disabled = true;
+      btn.textContent = '打包中';
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/export?format=segments_zip`, { method: 'POST' });
+        btn.textContent = '已打包';
+        $('pieceStatus').innerHTML = result.url ? `<a href="${result.url}" target="_blank">分段 ZIP · ${Number(result.segment_count || 0)} 段</a>` : '已打包';
+      } catch (err) {
+        btn.textContent = '打包失败';
+        $('pieceStatus').textContent = err.message;
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '分开下载 ZIP';
         }, 1600);
       }
     }
@@ -1379,7 +1403,41 @@
       } finally {
         setTimeout(() => {
           btn.disabled = false;
-          btn.textContent = '导出成片';
+          btn.textContent = '合并下载';
+        }, 1600);
+      }
+    }
+
+    async function exportRemixZip() {
+      if (!state.run) return;
+      const btn = $('exportRemixZipBtn');
+      const status = $('remixStatus');
+      if (!btn || !status) return;
+      if (!state.remixItems.length) {
+        status.textContent = '成片预览暂无片段，无法分开下载';
+        return;
+      }
+      btn.disabled = true;
+      btn.textContent = '打包中';
+      status.textContent = '正在打包当前成片预览的所有片段';
+      try {
+        const result = await api(`/api/runs/${encodeURIComponent(state.run.run_id)}/remix/export-segments`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            target_duration: 25,
+            items: serializeRemixItems(state.remixItems)
+          })
+        });
+        status.innerHTML = result.url ? `<a href="${result.url}" target="_blank">分段 ZIP · ${Number(result.segment_count || 0)} 段</a>` : '分段 ZIP 已导出';
+        btn.textContent = '已打包';
+      } catch (err) {
+        status.textContent = err.message;
+        btn.textContent = '打包失败';
+      } finally {
+        setTimeout(() => {
+          btn.disabled = false;
+          btn.textContent = '分开下载';
         }, 1600);
       }
     }

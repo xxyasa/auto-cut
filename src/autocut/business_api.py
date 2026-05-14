@@ -22,6 +22,7 @@ PR-2b 范围（本 PR）：
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import re
@@ -41,6 +42,7 @@ try:
         UploadFile,
         status,
     )
+    from fastapi.responses import FileResponse
     from pydantic import BaseModel, Field
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
@@ -49,6 +51,8 @@ except ImportError as exc:  # pragma: no cover
 
 from . import brand_repo, jobs, oss
 from .auth import require_token
+from .exporter import export_segments_zip
+from .remix import remix_export_segments
 
 
 # ---------- Pydantic 模型 ----------
@@ -291,6 +295,7 @@ async def upload_route(file: UploadFile = File(...)):
     max_bytes = _max_upload_bytes()
 
     written = 0
+    loop = asyncio.get_event_loop()
     try:
         with dest.open("wb") as fh:
             while True:
@@ -303,7 +308,8 @@ async def upload_route(file: UploadFile = File(...)):
                         status_code=413,  # Content Too Large
                         detail=f"too_large: streamed_bytes>{max_bytes}",
                     )
-                fh.write(chunk)
+                # 异步写磁盘，避免阻塞 event loop
+                await loop.run_in_executor(None, fh.write, chunk)
     except HTTPException:
         dest.unlink(missing_ok=True)
         raise
@@ -347,6 +353,7 @@ class RemixSpec(BaseModel):
     use_llm: bool = True
     stream: bool = False
     model: Optional[str] = None
+    plan_count: int = Field(default=1, ge=1, le=5)
 
 
 class JobCreate(BaseModel):
@@ -501,7 +508,7 @@ def _make_runner(payload: JobCreate, runs_root: Path):
             jobs.update_status(
                 job,
                 status="running",
-                stage="跑 remix 25s",
+                stage=f"跑 remix {payload.remix.target_duration:.0f}s",
                 progress=0.7,
                 tracks_result=tracks_result,
             )
@@ -517,37 +524,69 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                 remix_source = build_remix_source(
                     result, request, target_duration=payload.remix.target_duration
                 )
-                ordered_ids: list[str] = []
-                if payload.remix.use_llm:
-                    try:
-                        model_result = generate_ordered_ids(
-                            remix_source["prompt"],
-                            stream=payload.remix.stream,
-                            model=payload.remix.model,
-                        )
-                        ordered_ids = model_result.get("ordered_ids", [])
-                    except LLMError as exc:
-                        jobs.log_event(job.id, "WARN", "remix", f"llm_failed: {exc}")
-                if ordered_ids:
-                    plan = remix_plan_from_ordered_ids(
-                        remix_source["units"],
-                        ordered_ids,
-                        target_duration=payload.remix.target_duration,
-                    )
-                else:
-                    plan = remix_source["default_plan"]
-                if not plan.get("items"):
-                    raise RuntimeError("remix_no_items")
                 exports_dir = run_dir / "exports"
                 exports_dir.mkdir(parents=True, exist_ok=True)
-                output_path = exports_dir / f"{job.id}_remix_25s.mp4"
-                warning = export_remix_plan(result, plan, output_path)
-                if warning:
-                    raise RuntimeError(f"remix_export_warning: {warning}")
-                plan_path = run_dir / "metadata" / f"{output_path.stem}_plan.json"
-                write_remix_plan(plan_path, {**plan, "video_path": str(output_path)})
+                remix_plans: list[dict[str, Any]] = []
+                seen_orders: set[tuple[str, ...]] = set()
+                plan_count = payload.remix.plan_count if payload.remix.use_llm else 1
+                for plan_index in range(1, plan_count + 1):
+                    jobs.update_status(
+                        job,
+                        stage=f"生成成片预览方案 {plan_index}/{plan_count}",
+                        progress=round(0.7 + (plan_index - 1) / max(plan_count, 1) * 0.2, 3),
+                        tracks_result=tracks_result,
+                    )
+                    ordered_ids: list[str] = []
+                    model_result: dict[str, Any] | None = None
+                    if payload.remix.use_llm:
+                        try:
+                            model_result = generate_ordered_ids(
+                                _variant_prompt(remix_source["prompt"], plan_index, plan_count, seen_orders),
+                                stream=payload.remix.stream,
+                                model=payload.remix.model,
+                            )
+                            ordered_ids = model_result.get("ordered_ids", [])
+                        except LLMError as exc:
+                            jobs.log_event(job.id, "WARN", "remix", f"llm_failed_v{plan_index}: {exc}")
+                    if ordered_ids:
+                        plan = remix_plan_from_ordered_ids(
+                            remix_source["units"],
+                            ordered_ids,
+                            target_duration=payload.remix.target_duration,
+                        )
+                        if model_result:
+                            plan["model_reason"] = model_result.get("reason", "")
+                            plan["model_raw_content"] = model_result.get("raw_content", "")
+                    else:
+                        plan = remix_source["default_plan"]
+                    if not plan.get("items"):
+                        raise RuntimeError("remix_no_items")
+                    order_key = tuple(str(item) for item in plan.get("ordered_ids") or [])
+                    plan["variant_index"] = plan_index
+                    plan["variant_count"] = plan_count
+                    plan["duplicate"] = order_key in seen_orders
+                    seen_orders.add(order_key)
+                    output_path = exports_dir / f"{job.id}_remix_{int(round(payload.remix.target_duration))}s_v{plan_index}.mp4"
+                    warning = export_remix_plan(result, plan, output_path)
+                    if warning:
+                        raise RuntimeError(f"remix_export_warning: {warning}")
+                    plan_path = run_dir / "metadata" / f"{output_path.stem}_plan.json"
+                    write_remix_plan(plan_path, {**plan, "video_path": str(output_path)})
+                    remix_plans.append(
+                        {
+                            "index": plan_index,
+                            "label": f"方案 {plan_index}",
+                            "mp4": str(output_path),
+                            "plan": str(plan_path),
+                            "duration": plan.get("duration"),
+                            "ordered_ids": plan.get("ordered_ids", []),
+                            "duplicate": bool(plan.get("duplicate")),
+                        }
+                    )
                 tracks_result["remix"] = "ok"
-                artifacts["remix_mp4"] = str(output_path)
+                artifacts["remix_plans"] = remix_plans
+                if remix_plans:
+                    artifacts["remix_mp4"] = remix_plans[0]["mp4"]
                 jobs.update_status(
                     job,
                     progress=0.95,
@@ -646,7 +685,7 @@ def get_job_log_route(
 # ---------- Artifacts (MP4 预览/下载) ----------
 
 
-_SAFE_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SAFE_ARTIFACT_RE = re.compile(r"^[A-Za-z0-9._\-]+$")
 
 
 @router.get("/jobs/{job_id}/artifacts/{name}")
@@ -669,7 +708,7 @@ def get_job_artifact_route(job_id: str, name: str):
             detail=f"invalid_artifact_name: {name}",
         )
     ext = Path(name).suffix.lower()
-    if ext not in {".mp4", ".json"}:
+    if ext not in {".mp4", ".json", ".zip"}:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail=f"artifact_extension_not_allowed: {ext}",
@@ -685,15 +724,126 @@ def get_job_artifact_route(job_id: str, name: str):
             detail="path_traversal_blocked",
         ) from exc
     if not target.exists() or not target.is_file():
+        warning = _maybe_generate_segments_zip(job_id, name, exports_dir)
+        if warning:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=warning,
+            )
+    if not target.exists() or not target.is_file():
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"artifact_not_found: {name}",
         )
 
-    from fastapi.responses import FileResponse
-
-    media_type = "video/mp4" if ext == ".mp4" else "application/json"
+    media_type = {
+        ".mp4": "video/mp4",
+        ".json": "application/json",
+        ".zip": "application/zip",
+    }.get(ext, "application/octet-stream")
     return FileResponse(target, media_type=media_type, filename=name)
+
+
+def _maybe_generate_segments_zip(job_id: str, name: str, exports_dir: Path) -> str | None:
+    if name == f"{job_id}_enabled_segments.zip":
+        return _generate_enabled_segments_zip(job_id, exports_dir / name)
+    if name == f"{job_id}_remix_segments.zip":
+        return _generate_remix_segments_zip(job_id, exports_dir / name, variant_index=1)
+    match = re.fullmatch(rf"{re.escape(job_id)}_remix_v([1-5])_segments\.zip", name)
+    if match:
+        return _generate_remix_segments_zip(
+            job_id,
+            exports_dir / name,
+            variant_index=int(match.group(1)),
+        )
+    return None
+
+
+def _variant_prompt(
+    base_prompt: str,
+    plan_index: int,
+    plan_count: int,
+    seen_orders: set[tuple[str, ...]],
+) -> str:
+    if plan_count <= 1:
+        return base_prompt
+    styles = {
+        1: "常规爆款结构，兼顾开头吸引、中段卖点和结尾促单。",
+        2: "更强调卖点密度，尽量覆盖更多功能、材质、场景信息。",
+        3: "更强调产品外观、款式、使用场景和礼赠氛围。",
+        4: "更强调优惠、保障、促单理由和成交转化。",
+        5: "更强调差异化表达，避免和前面方案使用完全相同的句子顺序。",
+    }
+    used = [list(order) for order in seen_orders if order]
+    extra = [
+        "",
+        f"多方案生成补充要求：这是第 {plan_index}/{plan_count} 个混剪方案。",
+        styles.get(plan_index, styles[5]),
+        "请尽量避免与前面方案完全相同的 ordered_ids 顺序；如果素材确实有限，也必须保证语义自然。",
+    ]
+    if used:
+        extra.append(f"前面已经生成过的 ordered_ids 顺序：{json.dumps(used, ensure_ascii=False)}")
+    return base_prompt + "\n" + "\n".join(extra)
+
+
+def _generate_enabled_segments_zip(job_id: str, output_path: Path) -> str | None:
+    run_dir = output_path.parent.parent
+    result_path = run_dir / "metadata" / "result.json"
+    if not result_path.exists():
+        return None
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    source_video = Path(result.get("media", {}).get("path") or "").resolve()
+    segments = [
+        {
+            "id": candidate.get("clip_id", ""),
+            "start": candidate.get("start_time"),
+            "end": candidate.get("end_time"),
+            "summary": candidate.get("clean_transcript") or candidate.get("transcript") or candidate.get("reason") or "",
+            "text": candidate.get("clean_transcript") or candidate.get("transcript") or "",
+        }
+        for candidate in result.get("candidates", [])
+    ]
+    warning = export_segments_zip(source_video, output_path, segments)
+    if warning:
+        output_path.unlink(missing_ok=True)
+    return warning
+
+
+def _generate_remix_segments_zip(
+    job_id: str,
+    output_path: Path,
+    *,
+    variant_index: int,
+) -> str | None:
+    run_dir = output_path.parent.parent
+    result_path = run_dir / "metadata" / "result.json"
+    if not result_path.exists():
+        return None
+    plan_paths = _remix_plan_paths(run_dir, job_id, variant_index)
+    if not plan_paths:
+        return None
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    plan = json.loads(plan_paths[0].read_text(encoding="utf-8"))
+    source_video = Path(result.get("media", {}).get("path") or "").resolve()
+    segments = remix_export_segments(result, plan)
+    warning = export_segments_zip(source_video, output_path, segments)
+    if warning:
+        output_path.unlink(missing_ok=True)
+    return warning
+
+
+def _remix_plan_paths(run_dir: Path, job_id: str, variant_index: int) -> list[Path]:
+    metadata_dir = run_dir / "metadata"
+    exact = sorted(metadata_dir.glob(f"{job_id}_remix_*s_v{variant_index}_plan.json"))
+    if exact:
+        return exact
+    if variant_index == 1:
+        return sorted(
+            metadata_dir.glob(f"{job_id}_remix_*s_plan.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    return []
 
 
 # ---------- Lifespan hooks（api.py 调用） ----------

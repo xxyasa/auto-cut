@@ -190,6 +190,52 @@ class BusinessE2ETests(unittest.TestCase):
             self.assertEqual(log_resp.status_code, 200)
             self.assertGreater(len(log_resp.json()["lines"]), 0)
 
+    def test_upload_then_run_multiple_llm_remix_plans(self):
+        with self.client as c:
+            up = c.post(
+                "/api/business/upload",
+                headers=self.headers,
+                files={"file": ("sample.mp4", BytesIO(FIXTURE_VIDEO.read_bytes()), "video/mp4")},
+            )
+            uploaded_path = up.json()["uploaded_path"]
+
+            ordered = [
+                {"ordered_ids": ["s001", "s002"], "reason": "方案一"},
+                {"ordered_ids": ["s002", "s003"], "reason": "方案二"},
+            ]
+
+            def fake_generate_ordered_ids(*args, **kwargs):
+                return ordered.pop(0)
+
+            with patch("autocut.llm.generate_ordered_ids", side_effect=fake_generate_ordered_ids):
+                resp = c.post(
+                    "/api/business/jobs",
+                    json={
+                        "source": {"type": "upload", "uploaded_path": uploaded_path},
+                        "brand_product": {
+                            "product": "示例产品",
+                            "selling_points": ["舒适"],
+                        },
+                        "tracks": ["enabled", "remix"],
+                        "asr_engine": "transcript",
+                        "transcript_path": str(FIXTURE_TRANSCRIPT),
+                        "remix": {"use_llm": True, "target_duration": 25.0, "plan_count": 2},
+                    },
+                    headers=self.headers,
+                )
+                self.assertEqual(resp.status_code, 201, resp.text)
+                job_id = resp.json()["id"]
+                body = self._wait_job(job_id, timeout=120.0)
+
+            self.assertIn(body["status"], {"done", "partial_success"}, body)
+            plans = body["artifacts"].get("remix_plans") or []
+            self.assertEqual(len(plans), 2, body)
+            self.assertEqual(plans[0]["index"], 1)
+            self.assertEqual(plans[1]["index"], 2)
+            self.assertTrue(Path(plans[0]["mp4"]).exists())
+            self.assertTrue(Path(plans[1]["plan"]).exists())
+            self.assertEqual(body["artifacts"].get("remix_mp4"), plans[0]["mp4"])
+
     def test_brand_picker_path(self):
         """走 brand_id + product_id 路径，验证 brand_repo 联想词合并不影响 pipeline。"""
         brand = brand_repo.create_brand("品牌Z", ["IP-X"])

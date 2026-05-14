@@ -101,15 +101,20 @@
                 <div class="form-group border-bottom pb-4 mb-4" style="border-bottom: 1px solid var(--border); padding-bottom: 16px;">
                     <label>生成轨道</label>
                     <div class="flex gap-2 mt-2 flex-wrap">
-                        <label class="flex items-center gap-2"><input type="checkbox" id="track-enabled" value="enabled" checked> 初剪 enabled</label>
-                        <label class="flex items-center gap-2"><input type="checkbox" id="track-remix" value="remix" checked> 千川 remix</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="track-enabled" value="enabled" checked> 初剪轨道</label>
+                        <label class="flex items-center gap-2"><input type="checkbox" id="track-remix" value="remix" checked> 成片预览</label>
                     </div>
                     
                     <div id="remix-options" class="mt-2 p-3 bg-surface-2 rounded" style="background-color: var(--surface-2); padding: 12px; border-radius: 4px;">
                         <label class="flex items-center gap-2 mb-2"><input type="checkbox" id="remix-use-llm" checked> 使用 LLM 智能排序</label>
                         <div class="flex items-center gap-2">
                             <label class="text-sm">目标时长 (秒):</label>
-                            <input type="number" id="remix-duration" value="25" min="5" max="60" style="width: 80px;">
+                            <input type="number" id="remix-duration" value="30" min="5" max="60" style="width: 80px;">
+                        </div>
+                        <div class="flex items-center gap-2 mt-2">
+                            <label class="text-sm">混剪方案数:</label>
+                            <input type="number" id="remix-plan-count" value="2" min="1" max="5" style="width: 80px;">
+                            <span class="text-sm text-muted">使用 LLM 时生效</span>
                         </div>
                     </div>
                 </div>
@@ -163,21 +168,21 @@
                 <div class="progress-bar mb-4"><div class="progress-fill" id="detail-progress" style="width: 0%"></div></div>
 
                 <div class="tabs" id="detail-tabs">
-                    <div class="tab active" data-detail-tab="log">日志</div>
-                    <div class="tab" data-detail-tab="enabled">Enabled 轨道</div>
-                    <div class="tab" data-detail-tab="remix">Remix 轨道</div>
+                    <div class="tab active" data-detail-tab="log">处理过程</div>
+                    <div class="tab" data-detail-tab="enabled">初剪轨道</div>
+                    <div class="tab" data-detail-tab="remix">成片预览</div>
                 </div>
 
                 <div id="detail-log" class="log-view"></div>
                 
                 <div id="detail-enabled" class="hidden flex" style="flex-direction: column; gap: 8px;">
                     <div class="video-container"><video id="video-enabled" controls></video></div>
-                    <a id="link-enabled" class="btn btn-secondary btn-sm text-center" target="_blank" download>下载 Enabled MP4</a>
+                    <a id="link-enabled" class="btn btn-secondary btn-sm text-center" target="_blank" download>合并下载初剪 MP4</a>
+                    <a id="link-enabled-zip" class="btn btn-secondary btn-sm text-center" target="_blank" download>分开下载初剪 ZIP</a>
                 </div>
                 
                 <div id="detail-remix" class="hidden flex" style="flex-direction: column; gap: 8px;">
-                    <div class="video-container"><video id="video-remix" controls></video></div>
-                    <a id="link-remix" class="btn btn-secondary btn-sm text-center" target="_blank" download>下载 Remix MP4</a>
+                    <div id="remix-plans-container" class="flex" style="flex-direction: column; gap: 12px;"></div>
                 </div>
             </div>
 

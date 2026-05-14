@@ -7,6 +7,7 @@ from autocut.remix import (
     build_remix_source,
     build_script_units,
     export_remix_plan,
+    remix_export_segments,
     remix_plan_from_items,
     remix_plan_from_ordered_ids,
 )
@@ -59,6 +60,10 @@ class RemixTests(unittest.TestCase):
         self.assertIn("投放场景：千川短视频带货", source["prompt"])
         self.assertIn("第一条必须是正常开头", source["prompt"])
         self.assertIn("为什么第一句不突兀", source["prompt"])
+        self.assertIn("总时长控制在15秒左右", source["prompt"])
+        self.assertIn("目标时长：15秒左右", source["prompt"])
+        self.assertIn("在15秒左右接收到足够多的卖点信息", source["prompt"])
+        self.assertNotIn("30秒内", source["prompt"])
 
     def test_remix_units_use_clean_text_for_prompt(self):
         result = {
@@ -224,6 +229,42 @@ class RemixTests(unittest.TestCase):
 
         self.assertIsNone(warning)
         self.assertGreater(captured["ranges"][0]["start"], 0.0)
+
+    def test_remix_export_segments_uses_same_clean_ranges(self):
+        result = {
+            "media": {"path": "source.mp4"},
+            "transcript": [
+                {
+                    "start": 0.0,
+                    "end": 2.0,
+                    "text": "这样子的伞面很精致",
+                    "clean_text": "伞面很精致",
+                    "words": [
+                        {"word": "这样子的", "start": 0.0, "end": 0.4},
+                        {"word": "伞面", "start": 0.4, "end": 0.9},
+                        {"word": "很精致", "start": 0.9, "end": 2.0},
+                    ],
+                }
+            ],
+        }
+        plan = {
+            "items": [
+                {
+                    "id": "s001",
+                    "source_index": 0,
+                    "start": 0.0,
+                    "end": 2.0,
+                    "duration": 2.0,
+                    "text": "伞面很精致",
+                }
+            ]
+        }
+
+        segments = remix_export_segments(result, plan)
+
+        self.assertEqual(len(segments), 1)
+        self.assertGreater(segments[0]["start"], 0.0)
+        self.assertEqual(segments[0]["text"], "伞面很精致")
 
 
 if __name__ == "__main__":

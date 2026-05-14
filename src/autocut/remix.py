@@ -114,7 +114,24 @@ DEMO_PATTERNS = [
     "体现",
 ]
 
-SCRIPT_ROLE_ORDER = ["hook", "identity", "selling_point", "demo", "proof", "close"]
+APPEARANCE_PATTERNS = [
+    "颜色",
+    "色系",
+    "配色",
+    "款式",
+    "花色",
+    "图案",
+    "颜值",
+    "外观",
+    "好看",
+    "漂亮",
+    "美",
+    "联名",
+    "系列",
+    "学院",
+]
+
+SCRIPT_ROLE_ORDER = ["hook", "appearance", "identity", "selling_point", "demo", "proof", "close"]
 
 
 def build_remix_source(
@@ -322,6 +339,31 @@ def export_remix_plan(
     return media.export_clip_segments(source_video, output_path, ranges)
 
 
+def remix_export_segments(
+    result: dict[str, Any],
+    plan: dict[str, Any],
+) -> list[dict[str, Any]]:
+    source_video = Path(result.get("media", {}).get("path") or "").resolve()
+    transcript_segments = _transcript_segments(result.get("transcript", []))
+    segments: list[dict[str, Any]] = []
+    for item in plan.get("items", []):
+        ranges = _export_ranges_for_item(item, transcript_segments, source_video)
+        if not ranges:
+            ranges = [{"start": item.get("start"), "end": item.get("end")}]
+        for range_index, item_range in enumerate(ranges, 1):
+            suffix = f"_{range_index}" if len(ranges) > 1 else ""
+            segments.append(
+                {
+                    "id": f"{item.get('id', '')}{suffix}",
+                    "start": item_range.get("start"),
+                    "end": item_range.get("end"),
+                    "summary": item.get("text") or item.get("clean_text") or item.get("role") or "",
+                    "text": item.get("text") or item.get("clean_text") or "",
+                }
+            )
+    return segments
+
+
 def build_llm_prompt(
     units: list[dict[str, Any]],
     product: str,
@@ -358,18 +400,22 @@ def build_llm_prompt(
             "",
             "成片结构要求（严格遵守的三段式：开头—中间—结尾）：",
             "",
-            "【开头】（可选，可省略，可任选 1~3 句；如果直播切片里没有合适开头，可以直接进入中间）：",
-            "   - 产品类型/品类介绍（例如“这是一款……雨伞/项链/沙发”）",
-            "   - 全部款式展示（例如“我们一共有 X 个款”“今天上的全部款”）",
-            "   - 节假日送礼需求场景（例如“马上就要过节了”“送女朋友/送妈妈”等）",
+            "【开头】（必须有，选 1~2 句；开头必须优先选择描述颜色、款式、外观颜值的句子作为第一句）：",
+            "   - 【首选】颜色/款式/外观/颜值描述（例如：'我们有X个颜色/款式'、'这个颜色太好看了'、'哈利波特系列联名款'）",
+            "   - 产品类型/品类介绍（例如：'这是一款……雨伞/项链/沙发'）",
+            "   - 全部款式展示（例如：'我们一共有 X 个款'、'今天上的全部款'）",
+            "   - 节假日送礼需求场景（例如：'马上就要过节了'、'送女朋友/送妈妈'等）",
             "   - 产品特点综述（一句话讲清产品最大亮点）",
             "   - 故事情节引入（设计灵感、品牌故事、使用人群故事）",
             "   开头若选用必须语义完整、能独立成立，不能是承接半句。",
+            "   若候选句中没有颜色/款式/颜值相关句子，则用产品身份或钩子句开头。",
             "",
-            "【中间】（成片主体，必须有，从下列三类里至少选 1 句）：",
+            "【中间】（成片主体，必须有，要求选 3~5 个卖点句，越多越好，但不能超出时长限制）：",
             "   - 产品卖点（功能、效果、差异化、独特优势）",
             "   - 使用场景（什么时候用、给谁用、怎么用、搭配场景）",
             "   - 产品工艺（材质、做工细节、工艺、细节展示）",
+            f"   中间段要尽量丰富，让用户在{target_duration:.0f}秒左右接收到足够多的卖点信息，每个卖点句尽量不重复，覆盖功能、材质、场景等多维度。",
+            "   如果候选句中卖点相关句子不足3句，选出所有可用卖点句即可，不强求数量。",
             "",
             "【结尾】（必须有，强制以促单收尾，从下列促单要素里选 1~3 句）：",
             "   - 7 天无理由退换",
@@ -463,7 +509,7 @@ def _best_unit_for_role(
             unit
             for unit in units
             if unit["id"] not in used_ids
-            and unit.get("role") in {"selling_point", "demo"}
+            and unit.get("role") in {"selling_point", "demo", "appearance"}
             and _duration(selected) + unit["duration"] <= max_duration
         ]
     if not candidates:
@@ -723,10 +769,13 @@ def _score_unit(normalized: str, product_terms: list[str]) -> tuple[str, int, li
     identity_hits = _hits(normalized, IDENTITY_PATTERNS)
     selling_hits = _hits(normalized, SELLING_POINT_PATTERNS)
     demo_hits = _hits(normalized, DEMO_PATTERNS)
-    score += len(hook_hits) * 5 + len(identity_hits) * 6 + len(selling_hits) * 7 + len(demo_hits) * 4
-    matched_terms.extend(hook_hits + identity_hits + selling_hits + demo_hits)
+    appearance_hits = _hits(normalized, APPEARANCE_PATTERNS)
+    score += len(hook_hits) * 5 + len(identity_hits) * 6 + len(selling_hits) * 7 + len(demo_hits) * 4 + len(appearance_hits) * 6
+    matched_terms.extend(hook_hits + identity_hits + selling_hits + demo_hits + appearance_hits)
     if hook_hits:
         role = "hook" if not selling_hits else "close"
+    elif appearance_hits and not selling_hits:
+        role = "appearance"
     elif selling_hits:
         role = "selling_point"
     elif demo_hits:
