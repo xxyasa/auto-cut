@@ -24,6 +24,13 @@ done
 # 切到项目根目录
 cd "$(dirname "$0")/.."
 
+# 加载 .env
+if [[ -f .env ]]; then
+  set -o allexport
+  source .env
+  set +o allexport
+fi
+
 # Token 管理
 if [[ -z "${AUTOCUT_API_TOKEN:-}" ]]; then
   if [[ -f .dev-token ]]; then

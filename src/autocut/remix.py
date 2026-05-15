@@ -131,6 +131,28 @@ APPEARANCE_PATTERNS = [
     "学院",
 ]
 
+
+CLOSE_PATTERNS = [
+    "7天无理由",
+    "七天无理由",
+    "无理由退",
+    "运费险",
+    "礼盒",
+    "礼袋",
+    "礼品袋",
+    "送人",
+    "送礼",
+    "送给",
+    "送女朋友",
+    "送妈妈",
+    "送老婆",
+    "退换货",
+    "退货",
+    "包邮",
+    "邮费",
+    "放心买",
+    "放心入",
+]
 SCRIPT_ROLE_ORDER = ["hook", "appearance", "identity", "selling_point", "demo", "proof", "close"]
 
 
@@ -275,6 +297,7 @@ def remix_plan_from_ordered_ids(
         min_duration=max(12.0, target_duration - 4.0),
         max_duration=max_duration,
     )
+    selected = _reorder_by_structure(selected)
     plan = _plan_from_units(selected, target_duration=target_duration, strategy="model_order")
     plan["source_ordered_ids"] = [unit["id"] for unit in ordered_units]
     plan["duration_window"] = {
@@ -391,6 +414,8 @@ def build_llm_prompt(
             f"硬性要求：不能修改每一句文案中的任何一个字；只能选择句子编号并调整顺序；总时长控制在{target_duration:.0f}秒左右；必须按每条候选句前面的秒数累加；不要选择下播、排单、后台操作、闲聊、纯水词等非产品介绍内容。",
             f"时长边界：优先控制在{max(12.0, target_duration - 4.0):.0f}-{target_duration + 3.0:.0f}秒之间，宁可少选几句，也不要超过{target_duration + 3.0:.0f}秒。",
             "",
+            f"【多产品隔离要求】：本条视频可能包含对多个不同产品的介绍。你必须只选取同一个产品的句子，绝对不能把不同产品的句子混在一起出现在同一条成片里。优先选取与{product or '目标产品'!r}直接相关的句子。",
+            "",
             "成片合理性要求：",
             "1. 你必须先判断整条视频是否像一个完整、自然的带货短片，而不是直播中途突然截出来的一段。",
             "2. 第一条必须是正常开头：优先选择能独立成立的钩子、产品身份、价格福利或明确产品介绍句；开头不能让用户感觉前面少了一句话。",
@@ -416,8 +441,9 @@ def build_llm_prompt(
             "   - 产品工艺（材质、做工细节、工艺、细节展示）",
             f"   中间段要尽量丰富，让用户在{target_duration:.0f}秒左右接收到足够多的卖点信息，每个卖点句尽量不重复，覆盖功能、材质、场景等多维度。",
             "   如果候选句中卖点相关句子不足3句，选出所有可用卖点句即可，不强求数量。",
+            "   注意：中间段的句子顺序在后处理时会按原视频时间顺序重排，你只需要负责选出哪些句子进入中间段。",
             "",
-            "【结尾】（必须有，强制以促单收尾，从下列促单要素里选 1~3 句）：",
+            "【结尾】（必须有，强制以促单收尾；候选句中标注【促单】的句子是促单句，优先从中选取 1~3 句）：",
             "   - 7 天无理由退换",
             "   - 运费险",
             "   - 折扣 / 优惠 / 价格福利 / 直播间专属价",
@@ -516,6 +542,31 @@ def _best_unit_for_role(
         return None
     return max(candidates, key=lambda item: (item.get("score", 0), item.get("duration", 0)))
 
+
+
+def _reorder_by_structure(units: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """开头/结尾角色不动，中间段强制按 source_index 升序。"""
+    if len(units) <= 2:
+        return units
+    OPENING_ROLES = {"hook", "appearance", "identity"}
+    CLOSING_ROLES = {"close"}
+    opening: list[dict[str, Any]] = []
+    closing: list[dict[str, Any]] = []
+    remaining = list(units)
+    for unit in list(remaining):
+        if len(opening) >= 2:
+            break
+        if unit.get("role") in OPENING_ROLES:
+            opening.append(unit)
+            remaining.remove(unit)
+    for unit in list(reversed(remaining)):
+        if len(closing) >= 3:
+            break
+        if unit.get("role") in CLOSING_ROLES:
+            closing.insert(0, unit)
+            remaining.remove(unit)
+    middle = sorted(remaining, key=lambda u: u.get("source_index") or 0)
+    return opening + middle + closing
 
 def _fit_ordered_units_to_duration(
     ordered_units: list[dict[str, Any]],
@@ -674,7 +725,7 @@ def _prompt_line(unit: dict[str, Any]) -> str:
     parts = [
         unit["id"],
         f"{unit['duration']:.1f}s",
-        f"角色:{unit.get('role', 'unknown')}",
+        f"角色:{unit.get('role', 'unknown')}" + ("【促单】" if unit.get("role") == "close" else ""),
     ]
     opening_risk = _opening_risk(unit)
     if opening_risk:
@@ -770,10 +821,21 @@ def _score_unit(normalized: str, product_terms: list[str]) -> tuple[str, int, li
     selling_hits = _hits(normalized, SELLING_POINT_PATTERNS)
     demo_hits = _hits(normalized, DEMO_PATTERNS)
     appearance_hits = _hits(normalized, APPEARANCE_PATTERNS)
-    score += len(hook_hits) * 5 + len(identity_hits) * 6 + len(selling_hits) * 7 + len(demo_hits) * 4 + len(appearance_hits) * 6
-    matched_terms.extend(hook_hits + identity_hits + selling_hits + demo_hits + appearance_hits)
-    if hook_hits:
-        role = "hook" if not selling_hits else "close"
+    close_hits = _hits(normalized, CLOSE_PATTERNS)
+    score += (
+        len(hook_hits) * 5
+        + len(identity_hits) * 6
+        + len(selling_hits) * 7
+        + len(demo_hits) * 4
+        + len(appearance_hits) * 6
+        + len(close_hits) * 8
+    )
+    matched_terms.extend(hook_hits + identity_hits + selling_hits + demo_hits + appearance_hits + close_hits)
+    # close 优先级最高：含促单要素的句子不归为 hook/selling_point
+    if close_hits:
+        role = "close"
+    elif hook_hits and not selling_hits:
+        role = "hook"
     elif appearance_hits and not selling_hits:
         role = "appearance"
     elif selling_hits:

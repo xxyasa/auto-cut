@@ -4,16 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Auto Cut · 自助成片</title>
-    <link href="/business.css" rel="stylesheet">
-    <link href="/combobox.css" rel="stylesheet">
+    <link href="/business.css?v=2" rel="stylesheet">
+    <link href="/combobox.css?v=2" rel="stylesheet">
     <script>
         // Prevent dark mode flash
-        const savedTheme = localStorage.getItem('autocut_theme') || 
+        const savedTheme = localStorage.getItem('autocut_theme') ||
             (window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light');
         document.documentElement.setAttribute('data-theme', savedTheme);
     </script>
-    <script src="/combobox.js" defer></script>
-    <script src="/business.js" defer></script>
+    <script src="/combobox.js?v=2" defer></script>
+    <script src="/business.js?v=2" defer></script>
 </head>
 <body>
     <header class="app-header">
