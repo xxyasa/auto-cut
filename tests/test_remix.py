@@ -38,7 +38,7 @@ class RemixTests(unittest.TestCase):
                 {"start": 0.0, "end": 4.0, "text": "这把哈利波特联名透明伞是学院风设计"},
                 {"start": 4.0, "end": 9.0, "text": "加厚防水PEO伞布雨天通勤也很方便"},
                 {"start": 9.0, "end": 13.0, "text": "加强加固伞骨打开以后很稳"},
-                {"start": 13.0, "end": 18.0, "text": "今天福利价格直接拍下就能带走"},
+                {"start": 13.0, "end": 18.0, "text": "今天福利优惠拍下就能带走"},
             ]
         }
 
@@ -53,17 +53,37 @@ class RemixTests(unittest.TestCase):
         )
         plan = source["default_plan"]
 
-        self.assertEqual(plan["items"][0]["text"], "今天福利价格直接拍下就能带走")
+        self.assertEqual(plan["items"][0]["text"], "这把哈利波特联名透明伞是学院风设计")
+        self.assertEqual(plan["items"][-1]["text"], "今天福利优惠拍下就能带走")
         self.assertIn("这把哈利波特联名透明伞是学院风设计", plan["script_text"])
-        self.assertEqual(plan["items"][0]["id"], "s004")
+        self.assertEqual(plan["items"][-1]["id"], "s004")
         self.assertIn("品牌/热词：Pinkypinky、哈利波特、透明伞", source["prompt"])
         self.assertIn("投放场景：千川短视频带货", source["prompt"])
         self.assertIn("第一条必须是正常开头", source["prompt"])
         self.assertIn("为什么第一句不突兀", source["prompt"])
+        self.assertIn("可以选择“有优惠/有折扣/有活动/福利”", source["prompt"])
+        self.assertIn("禁止选择或描述具体售价", source["prompt"])
+        self.assertNotIn("价格福利", source["prompt"])
         self.assertIn("总时长控制在15秒左右", source["prompt"])
         self.assertIn("目标时长：15秒左右", source["prompt"])
         self.assertIn("在15秒左右接收到足够多的卖点信息", source["prompt"])
         self.assertNotIn("30秒内", source["prompt"])
+
+    def test_price_claims_are_filtered_but_discount_words_are_allowed(self):
+        result = {
+            "transcript": [
+                {"start": 0.0, "end": 3.0, "text": "这款手机包有五个颜色可以选"},
+                {"start": 3.0, "end": 6.0, "text": "今天有优惠有折扣活动"},
+                {"start": 6.0, "end": 9.0, "text": "直播间到手价只要39元"},
+            ]
+        }
+
+        units = build_script_units(result, product="手机包", selling_points=["五个颜色"])
+
+        self.assertFalse(units[1]["excluded"])
+        self.assertEqual(units[1]["role"], "close")
+        self.assertTrue(units[2]["excluded"])
+        self.assertEqual(units[2]["exclude_reason"], "价格信息/具体售价")
 
     def test_remix_units_use_clean_text_for_prompt(self):
         result = {
@@ -163,6 +183,18 @@ class RemixTests(unittest.TestCase):
 
         self.assertEqual(plan["ordered_ids"], ["s044", "s026", "s013", "s014"])
         self.assertEqual(plan["duration"], 25.26)
+
+    def test_model_order_short_plan_is_filled_from_remaining_units(self):
+        units = [
+            {"id": "s001", "source_index": 0, "start": 0.0, "end": 13.0, "duration": 13.0, "text": "补充卖点", "role": "proof", "score": 0, "excluded": False},
+            {"id": "s002", "source_index": 1, "start": 13.0, "end": 19.2, "duration": 6.2, "text": "核心卖点", "role": "selling_point", "score": 35, "excluded": False},
+            {"id": "s003", "source_index": 2, "start": 19.2, "end": 24.88, "duration": 5.68, "text": "外观颜色", "role": "appearance", "score": 6, "excluded": False},
+        ]
+
+        plan = remix_plan_from_ordered_ids(units, ["s003", "s002"], target_duration=30)
+
+        self.assertEqual(plan["duration"], 24.88)
+        self.assertEqual(set(plan["ordered_ids"]), {"s001", "s002", "s003"})
 
     def test_manual_remix_items_keep_source_ranges(self):
         plan = remix_plan_from_items(

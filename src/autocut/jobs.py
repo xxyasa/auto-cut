@@ -310,6 +310,7 @@ def enqueue(
         _save_job(job)
         log_event(job_id, "INFO", "queued", "job enqueued", extra={"tracks": job.tracks})
         _QUEUE.put((job_id, runner))
+    start_worker()
     return job_id
 
 

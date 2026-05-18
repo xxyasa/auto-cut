@@ -19,16 +19,50 @@ $ErrorActionPreference = "Stop"
 
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
-if (-not $Token) {
+function Import-DotEnv {
+    param([string]$Path)
+
+    if (-not (Test-Path -LiteralPath $Path)) {
+        return
+    }
+
+    Get-Content -LiteralPath $Path | ForEach-Object {
+        $line = $_.Trim()
+        if (-not $line -or $line.StartsWith("#")) {
+            return
+        }
+
+        $match = [regex]::Match($line, '^(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)$')
+        if (-not $match.Success) {
+            return
+        }
+
+        $name = $match.Groups[1].Value
+        $value = $match.Groups[2].Value.Trim()
+        if (($value.StartsWith('"') -and $value.EndsWith('"')) -or ($value.StartsWith("'") -and $value.EndsWith("'"))) {
+            $value = $value.Substring(1, $value.Length - 2)
+        }
+
+        [Environment]::SetEnvironmentVariable($name, $value, "Process")
+    }
+}
+
+Import-DotEnv -Path ".env"
+
+if ($Token) {
+    $env:AUTOCUT_API_TOKEN = $Token
+} elseif ($env:AUTOCUT_API_TOKEN) {
+    $Token = $env:AUTOCUT_API_TOKEN
+} else {
     if (Test-Path .dev-token) {
         $Token = (Get-Content .dev-token -Raw).Trim()
     } else {
         $Token = "devtoken-" + ([Guid]::NewGuid().ToString("N").Substring(0, 12))
         Set-Content -Path .dev-token -Value $Token -NoNewline
     }
+    $env:AUTOCUT_API_TOKEN = $Token
 }
 
-$env:AUTOCUT_API_TOKEN = $Token
 $env:PYTHONUNBUFFERED = "1"
 if (-not $env:AUTOCUT_RUNS_DIR) {
     $env:AUTOCUT_RUNS_DIR = (Resolve-Path .).Path + "\data\runs"
@@ -57,6 +91,23 @@ Write-Host " URL  : http://${BindHost}:${Port}/business.html" -ForegroundColor G
 Write-Host " API  : http://${BindHost}:${Port}/api/business/" -ForegroundColor Green
 Write-Host " Token: $Token" -ForegroundColor Yellow
 Write-Host " Runs : $env:AUTOCUT_RUNS_DIR" -ForegroundColor Gray
+if ($env:AUTOCUT_ASR_API_URL) {
+    $asrUri = [Uri]$env:AUTOCUT_ASR_API_URL
+    $fallback = if ($env:AUTOCUT_ASR_HTTP_FALLBACK) { $env:AUTOCUT_ASR_HTTP_FALLBACK } else { "off" }
+    $uploadFormat = if ($env:AUTOCUT_ASR_UPLOAD_FORMAT) { $env:AUTOCUT_ASR_UPLOAD_FORMAT } else { "wav" }
+    Write-Host " ASR  : $($asrUri.Scheme)://$($asrUri.Host)  http_fallback=$fallback  upload=$uploadFormat" -ForegroundColor Gray
+    if ($asrUri.Host -in @("http", "https")) {
+        Write-Host "       WARN: ASR URL host looks invalid; check for duplicated scheme like https://https://" -ForegroundColor Yellow
+    }
+}
+if ($env:AUTOCUT_LLM_API_URL) {
+    $llmUri = [Uri]$env:AUTOCUT_LLM_API_URL
+    $fallback = if ($env:AUTOCUT_LLM_HTTP_FALLBACK) { $env:AUTOCUT_LLM_HTTP_FALLBACK } else { "off" }
+    Write-Host " LLM  : $($llmUri.Scheme)://$($llmUri.Host)  http_fallback=$fallback" -ForegroundColor Gray
+    if ($llmUri.Host -in @("http", "https")) {
+        Write-Host "       WARN: LLM URL host looks invalid; check for duplicated scheme like https://https://" -ForegroundColor Yellow
+    }
+}
 Write-Host "================================================" -ForegroundColor Cyan
 Write-Host ""
 

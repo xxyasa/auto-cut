@@ -562,9 +562,17 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                     if not plan.get("items"):
                         raise RuntimeError("remix_no_items")
                     order_key = tuple(str(item) for item in plan.get("ordered_ids") or [])
+                    if order_key in seen_orders:
+                        jobs.log_event(
+                            job.id,
+                            "WARN",
+                            "remix",
+                            f"duplicate_plan_skipped_v{plan_index}: {','.join(order_key)}",
+                        )
+                        continue
                     plan["variant_index"] = plan_index
                     plan["variant_count"] = plan_count
-                    plan["duplicate"] = order_key in seen_orders
+                    plan["duplicate"] = False
                     seen_orders.add(order_key)
                     output_path = exports_dir / f"{job.id}_remix_{int(round(payload.remix.target_duration))}s_v{plan_index}.mp4"
                     warning = export_remix_plan(result, plan, output_path)
@@ -583,6 +591,8 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                             "duplicate": bool(plan.get("duplicate")),
                         }
                     )
+                if not remix_plans:
+                    raise RuntimeError("remix_no_unique_plans")
                 tracks_result["remix"] = "ok"
                 artifacts["remix_plans"] = remix_plans
                 if remix_plans:
@@ -637,6 +647,7 @@ def _job_to_dict(job: jobs.Job) -> dict[str, Any]:
 
 @router.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job_route(payload: JobCreate = Body(...)):
+    _ensure_worker_running()
     # 先把品牌/产品入参验一下，让 422/404/400 立即返回，而非异步失败
     try:
         _resolve_brand_product(payload.brand_product)
@@ -657,11 +668,13 @@ def create_job_route(payload: JobCreate = Body(...)):
 
 @router.get("/jobs")
 def list_jobs_route(limit: int = Query(default=50, ge=1, le=200)):
+    _ensure_worker_running()
     return {"jobs": [_job_to_dict(j) for j in jobs.list_jobs(limit=limit)]}
 
 
 @router.get("/jobs/{job_id}")
 def get_job_route(job_id: str):
+    _ensure_worker_running()
     job = jobs.get_job(job_id)
     if job is None:
         raise HTTPException(
@@ -862,3 +875,8 @@ def lifespan_startup() -> dict[str, Any]:
 
 def lifespan_shutdown(timeout: float = 5.0) -> None:
     jobs.stop_worker(timeout=timeout)
+
+
+def _ensure_worker_running() -> None:
+    if not jobs.is_worker_running():
+        jobs.start_worker()

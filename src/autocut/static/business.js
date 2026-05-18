@@ -1052,6 +1052,7 @@ function init() {
       { value: 'faster-whisper', label: 'faster-whisper' },
       { value: 'funasr', label: 'funasr' },
       { value: 'glm-asr', label: 'glm-asr (默认，高精度)' },
+      { value: 'whisper-api', label: 'whisper-large-v3 API' },
     ],
     onChange: value => {
       document.getElementById('transcript-path-wrap').classList.toggle('hidden', value !== 'transcript');

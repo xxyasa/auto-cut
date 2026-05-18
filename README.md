@@ -184,6 +184,10 @@ docker compose up -d --build
 | `AUTOCUT_LLM_API_URL` | 否 | LLM 接口地址 |
 | `AUTOCUT_LLM_MODEL` | 否 | 模型名，如 `deepseek-v3.2` |
 | `AUTOCUT_LLM_API_KEY` | 否 | LLM API Key |
+| `AUTOCUT_LLM_HTTP_FALLBACK` | 否 | HTTPS 握手失败后尝试同路径 HTTP，可信内网才开启 |
+| `AUTOCUT_ASR_API_URL` | 否 | 远端 Whisper/OpenAI 兼容转写接口 |
+| `AUTOCUT_ASR_API_KEY` | 否 | 远端 ASR API Key；不填时回退用 `AUTOCUT_LLM_API_KEY` |
+| `AUTOCUT_ASR_UPLOAD_FORMAT` | 否 | 远端 ASR 上传格式，默认 `wav`；可设 `mp3` / `source` |
 
 ### 本地模型挂载
 
@@ -219,3 +223,33 @@ chmod +x scripts/start.sh
 ```
 
 `stream=true` 时后端会按流式读取模型响应，但最终仍聚合出 `ordered_ids` 后再导出视频。模型只允许返回字幕 ID 顺序，不能改写每句字幕文本。
+
+## 远端 Whisper ASR
+
+如果有 OpenAI 兼容的 `/v1/audio/transcriptions` 服务，可以用远端 `whisper-large-v3`
+直接返回 segment/word 时间戳，替代本地 `models/faster-whisper-small`：
+
+```powershell
+$env:AUTOCUT_ASR_API_URL="https://model-api.ecmax.cn/v1/audio/transcriptions"
+$env:AUTOCUT_ASR_API_KEY="<your-api-key>"
+
+autocut run .\your-live.mp4 `
+  --product "产品名" `
+  --selling-point "卖点" `
+  --asr whisper-api `
+  --asr-model whisper-large-v3 `
+  --output .\data\runs\demo-large
+```
+
+业务页面的“高级 ASR 设置”里也可以选择 `whisper-large-v3 API`。该模式会请求
+`response_format=verbose_json` 和 `timestamp_granularities=["word","segment"]`。
+
+如果日志显示所有客户端都在 HTTPS 握手阶段失败，例如 `UNEXPECTED_EOF_WHILE_READING`
+或 `TLS/SSL connection has been closed (EOF)`，通常是远端 ASR 网关的 HTTPS 配置问题。
+优先修复网关证书/TLS；若确认该接口只在可信内网提供 HTTP，可将
+`AUTOCUT_ASR_API_URL` 改为 `http://.../v1/audio/transcriptions`，或显式设置
+`AUTOCUT_ASR_HTTP_FALLBACK=1` 让客户端在 HTTPS 失败后尝试同路径 HTTP。
+
+LLM remix 使用 `AUTOCUT_LLM_API_URL`。如果出现同类 TLS EOF，优先修复 LLM 网关
+HTTPS；可信内网场景可改为 `http://.../v1/chat/completions`，或设置
+`AUTOCUT_LLM_HTTP_FALLBACK=1`。

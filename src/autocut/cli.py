@@ -39,7 +39,21 @@ def build_parser() -> argparse.ArgumentParser:
     run_parser.add_argument("--selling-point", action="append", default=[], help="核心卖点，可重复传入")
     run_parser.add_argument("--selling-points", default="", help="逗号分隔的卖点")
     run_parser.add_argument("--transcript", type=Path, help="已有转写文件，支持 JSON/SRT")
-    run_parser.add_argument("--asr", default="transcript", choices=["transcript", "faster-whisper", "funasr", "fun-asr"])
+    run_parser.add_argument(
+        "--asr",
+        default="transcript",
+        choices=[
+            "transcript",
+            "faster-whisper",
+            "funasr",
+            "fun-asr",
+            "glm-asr",
+            "glm",
+            "whisper-api",
+            "remote-whisper",
+            "faster-whisper-api",
+        ],
+    )
     run_parser.add_argument("--asr-model", default="small", help="ASR 模型名，faster-whisper 默认 small")
     run_parser.add_argument("--asr-device", default="cpu", help="ASR 设备，默认 cpu；有 CUDA 环境时可传 cuda")
     run_parser.add_argument("--asr-compute-type", default="int8", help="ASR 计算类型，CPU 默认 int8")
