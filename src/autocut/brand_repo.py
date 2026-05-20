@@ -30,6 +30,7 @@ from typing import Any, Optional
 SUPPORTED_SCHEMA_VERSION = 1
 DEFAULT_REPO_PATH = "data/brand_repo.json"
 ENV_REPO_PATH = "AUTOCUT_BRAND_REPO"
+MAX_TAGS = 200
 
 
 # ---------- 异常 ----------
@@ -181,7 +182,7 @@ def _normalize_str_list(value: Any) -> list[str]:
     """把任意输入归一化成 list[str]；非字符串或空串过滤。"""
     if not isinstance(value, list):
         return []
-    return [item.strip() for item in value if isinstance(item, str) and item.strip()]
+    return [item.strip() for item in value if isinstance(item, str) and item.strip()][:MAX_TAGS]
 
 
 # ---------- 品牌 CRUD ----------

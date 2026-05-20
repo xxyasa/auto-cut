@@ -10,6 +10,7 @@ from autocut.remix import (
     remix_export_segments,
     remix_plan_from_items,
     remix_plan_from_ordered_ids,
+    score_remix_plan,
 )
 
 
@@ -85,6 +86,81 @@ class RemixTests(unittest.TestCase):
         self.assertTrue(units[2]["excluded"])
         self.assertEqual(units[2]["exclude_reason"], "价格信息/具体售价")
 
+    def test_live_audience_interactions_are_filtered(self):
+        result = {
+            "transcript": [
+                {"start": 0.0, "end": 2.5, "text": "有宝宝问这个伞是不是防水"},
+                {"start": 2.5, "end": 5.0, "text": "这把透明伞雨天通勤很方便"},
+            ]
+        }
+
+        units = build_script_units(result, product="透明伞", selling_points=["防水"])
+
+        self.assertTrue(units[0]["excluded"])
+        self.assertEqual(units[0]["exclude_reason"], "直播互动/回复观众")
+        self.assertFalse(units[1]["excluded"])
+
+    def test_other_link_products_are_filtered_without_target_hit(self):
+        result = {
+            "transcript": [
+                {"start": 0.0, "end": 3.0, "text": "另一款手机包在三号链接"},
+                {"start": 3.0, "end": 6.0, "text": "这款透明伞是哈利波特学院风设计"},
+            ]
+        }
+
+        units = build_script_units(
+            result,
+            product="哈利波特透明伞",
+            selling_points=["学院风设计"],
+        )
+
+        self.assertTrue(units[0]["excluded"])
+        self.assertEqual(units[0]["exclude_reason"], "其他链接/非主品")
+        self.assertFalse(units[1]["excluded"])
+
+    def test_scores_risky_remix_plan_with_actionable_labels(self):
+        plan = {
+            "target_duration": 25,
+            "duration": 16.0,
+            "script_text": "有宝宝问这个是不是防水\n另一款手机包在三号链接",
+            "items": [
+                {"text": "有宝宝问这个是不是防水", "role": "proof", "duration": 8.0},
+                {"text": "另一款手机包在三号链接", "role": "proof", "duration": 8.0},
+            ],
+        }
+
+        quality = score_remix_plan(
+            plan,
+            {"product": "哈利波特透明伞", "selling_points": ["学院风设计"]},
+            target_duration=25,
+        )
+
+        self.assertEqual(quality["level"], "risk")
+        self.assertIn("直播互动", [risk["label"] for risk in quality["risks"]])
+        self.assertIn("疑似非主品", [risk["label"] for risk in quality["risks"]])
+
+    def test_scores_clean_remix_plan_as_good(self):
+        plan = {
+            "target_duration": 25,
+            "duration": 22.0,
+            "script_text": "这款哈利波特透明伞是学院风设计\n伞面图案非常精致\n雨天通勤也很方便\n礼袋包装送人很合适",
+            "items": [
+                {"text": "这款哈利波特透明伞是学院风设计", "role": "identity", "duration": 5.0},
+                {"text": "伞面图案非常精致", "role": "selling_point", "duration": 5.0},
+                {"text": "雨天通勤也很方便", "role": "demo", "duration": 5.0},
+                {"text": "礼袋包装送人很合适", "role": "close", "duration": 7.0},
+            ],
+        }
+
+        quality = score_remix_plan(
+            plan,
+            {"product": "哈利波特透明伞", "selling_points": ["学院风设计", "伞面图案"]},
+            target_duration=25,
+        )
+
+        self.assertEqual(quality["level"], "good")
+        self.assertGreaterEqual(quality["score"], 90)
+
     def test_remix_units_use_clean_text_for_prompt(self):
         result = {
             "transcript": [
@@ -109,6 +185,27 @@ class RemixTests(unittest.TestCase):
 
         self.assertEqual(source["units"][0]["text"], "伞面它的学院图案")
         self.assertNotIn("这样子的等等", source["prompt"])
+
+    def test_adjacent_short_asr_segments_are_merged_for_remix_prompt(self):
+        result = {
+            "transcript": [
+                {"start": 0.0, "end": 1.4, "text": "这款透明伞"},
+                {"start": 1.65, "end": 3.2, "text": "是哈利波特学院风设计"},
+                {"start": 3.45, "end": 5.0, "text": "伞面图案非常精致"},
+            ]
+        }
+
+        units = build_script_units(
+            result,
+            product="哈利波特透明伞",
+            selling_points=["学院风设计", "伞面图案"],
+        )
+
+        self.assertEqual(len(units), 1)
+        self.assertEqual(units[0]["source_index"], 0)
+        self.assertEqual(units[0]["source_indexes"], [0, 1, 2])
+        self.assertIn("这款透明伞，是哈利波特学院风设计", units[0]["text"])
+        self.assertEqual(units[0]["duration"], 5.0)
 
     def test_prompt_marks_risky_opening_lines(self):
         result = {

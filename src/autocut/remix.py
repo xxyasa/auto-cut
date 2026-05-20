@@ -56,6 +56,53 @@ NON_PRODUCT_PATTERNS = [
     "卡了",
 ]
 
+LIVE_INTERACTION_PATTERNS = [
+    "你问的",
+    "刚才问",
+    "有人问",
+    "有姐妹问",
+    "有宝宝问",
+    "评论区",
+    "公屏",
+    "弹幕",
+    "回复一下",
+    "回答一下",
+    "我看一下",
+    "我来看一下",
+    "私信",
+    "客服",
+    "扣1",
+    "扣个1",
+    "打个1",
+    "打在公屏",
+    "发在公屏",
+    "你要的",
+    "你说的",
+    "刚刚说的",
+]
+
+OTHER_PRODUCT_PATTERNS = [
+    "号链接",
+    "另一个链接",
+    "另外一个链接",
+    "其他链接",
+    "别的链接",
+    "上面那个链接",
+    "下面那个链接",
+    "左下角链接",
+    "右下角链接",
+    "另一款",
+    "另外一款",
+    "还有一款",
+    "其他款",
+    "别的款",
+    "其他产品",
+    "别的产品",
+    "不是这款",
+    "不是这个",
+    "拍那个",
+]
+
 HOOK_PATTERNS = [
     "福利",
     "上新",
@@ -168,6 +215,15 @@ PRICE_CLAIM_RE = re.compile(
 
 SCRIPT_ROLE_ORDER = ["appearance", "identity", "selling_point", "demo", "proof", "close"]
 
+SCRIPT_UNIT_MERGE_GAP = 0.85
+SCRIPT_UNIT_MERGE_TARGET_DURATION = 4.0
+SCRIPT_UNIT_MERGE_MAX_DURATION = 6.5
+SCRIPT_UNIT_MERGE_SHORT_TEXT_LEN = 18
+
+REMIX_SEGMENT_LEAD_PADDING = 0.18
+REMIX_SEGMENT_TAIL_PADDING = 0.32
+REMIX_SEGMENT_MAX_SILENCE_TAIL = 0.55
+
 
 def build_remix_source(
     result: dict[str, Any],
@@ -207,6 +263,7 @@ def build_script_units(
     brand_terms: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     product_terms = _product_terms(product, [*(selling_points or []), *(brand_terms or [])])
+    target_terms = _target_product_terms(product, [*(selling_points or []), *(brand_terms or [])])
     units: list[dict[str, Any]] = []
     for index, segment in enumerate(result.get("transcript", []), 1):
         try:
@@ -223,7 +280,10 @@ def build_script_units(
             continue
         normalized = _normalize(text)
         raw_normalized = _normalize(raw_text)
-        exclude_reason = _exclude_reason(raw_normalized) or _exclude_reason(normalized)
+        exclude_reason = (
+            _exclude_reason(raw_normalized, target_terms)
+            or _exclude_reason(normalized, target_terms)
+        )
         role, score, matched_terms = _score_unit(normalized, product_terms)
         filler_ratio = _float(segment.get("filler_ratio"))
         invalid_reasons = [str(reason) for reason in segment.get("invalid_reasons") or []]
@@ -237,6 +297,7 @@ def build_script_units(
             {
                 "id": f"s{index:03d}",
                 "source_index": index - 1,
+                "source_indexes": [index - 1],
                 "start": round(start, 3),
                 "end": round(end, 3),
                 "duration": round(end - start, 3),
@@ -252,7 +313,105 @@ def build_script_units(
                 "exclude_reason": exclude_reason,
             }
         )
-    return units
+    return _merge_adjacent_script_units(units, product_terms)
+
+
+def _merge_adjacent_script_units(
+    units: list[dict[str, Any]],
+    product_terms: list[str],
+) -> list[dict[str, Any]]:
+    merged: list[dict[str, Any]] = []
+    current: dict[str, Any] | None = None
+
+    for unit in units:
+        if current is None:
+            current = dict(unit)
+            continue
+        if _should_merge_script_units(current, unit):
+            current = _merge_script_unit_pair(current, unit, product_terms)
+            continue
+        merged.append(current)
+        current = dict(unit)
+
+    if current is not None:
+        merged.append(current)
+    return merged
+
+
+def _should_merge_script_units(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    if left.get("excluded") or right.get("excluded"):
+        return False
+    if _opening_risk(left) or _opening_risk(right):
+        return False
+    if left.get("role") == "close" or right.get("role") == "close":
+        return left.get("role") == right.get("role")
+    gap = _float(right.get("start")) - _float(left.get("end"))
+    if gap < -0.05 or gap > SCRIPT_UNIT_MERGE_GAP:
+        return False
+    combined_duration = _float(right.get("end")) - _float(left.get("start"))
+    if combined_duration > SCRIPT_UNIT_MERGE_MAX_DURATION:
+        return False
+    if _float(left.get("duration")) < SCRIPT_UNIT_MERGE_TARGET_DURATION:
+        return True
+    if _float(right.get("duration")) < 2.0:
+        return True
+    return len(_normalize(str(left.get("text") or ""))) < SCRIPT_UNIT_MERGE_SHORT_TEXT_LEN
+
+
+def _merge_script_unit_pair(
+    left: dict[str, Any],
+    right: dict[str, Any],
+    product_terms: list[str],
+) -> dict[str, Any]:
+    raw_text = _join_unit_text(str(left.get("raw_text") or ""), str(right.get("raw_text") or ""))
+    clean_text_value = _join_unit_text(str(left.get("clean_text") or ""), str(right.get("clean_text") or ""))
+    text = clean_text_value or _join_unit_text(str(left.get("text") or ""), str(right.get("text") or ""))
+    normalized = _normalize(text)
+    role, score, matched_terms = _score_unit(normalized, product_terms)
+    left_duration = _float(left.get("duration"))
+    right_duration = _float(right.get("duration"))
+    duration = max(0.0, _float(right.get("end")) - _float(left.get("start")))
+    filler_ratio = 0.0
+    if left_duration + right_duration > 0:
+        filler_ratio = (
+            _float(left.get("filler_ratio")) * left_duration
+            + _float(right.get("filler_ratio")) * right_duration
+        ) / (left_duration + right_duration)
+    invalid_reasons = sorted(
+        {
+            *[str(reason) for reason in left.get("invalid_reasons") or []],
+            *[str(reason) for reason in right.get("invalid_reasons") or []],
+        }
+    )
+    return {
+        **left,
+        "end": round(_float(right.get("end")), 3),
+        "duration": round(duration, 3),
+        "text": text,
+        "raw_text": raw_text,
+        "clean_text": clean_text_value,
+        "role": role,
+        "score": score,
+        "matched_terms": matched_terms,
+        "filler_ratio": round(filler_ratio, 3),
+        "invalid_reasons": invalid_reasons,
+        "source_indexes": [
+            *[idx for idx in left.get("source_indexes") or [left.get("source_index")] if isinstance(idx, int)],
+            *[idx for idx in right.get("source_indexes") or [right.get("source_index")] if isinstance(idx, int)],
+        ],
+    }
+
+
+def _join_unit_text(left: str, right: str) -> str:
+    left = left.strip()
+    right = right.strip()
+    if not left:
+        return right
+    if not right:
+        return left
+    if left.endswith(("，", "。", "！", "？", ",", ".", "!", "?")):
+        return left + right
+    return left + "，" + right
 
 
 def build_remix_plan(
@@ -439,7 +598,8 @@ def build_llm_prompt(
             "价格合规要求：可以选择“有优惠/有折扣/有活动/福利”这类非售价促单句；禁止选择或描述具体售价、金额、到手价、直播价、专属价、几块几毛、立减/满减金额等价格信息；含具体价格文本的句子即使有促单价值也不要选。",
             f"时长边界：优先控制在{max(12.0, target_duration - 4.0):.0f}-{target_duration + 3.0:.0f}秒之间，宁可少选几句，也不要超过{target_duration + 3.0:.0f}秒。",
             "",
-            f"【多产品隔离要求】：本条视频可能包含对多个不同产品的介绍。你必须只选取同一个产品的句子，绝对不能把不同产品的句子混在一起出现在同一条成片里。优先选取与{product or '目标产品'!r}直接相关的句子。",
+            f"【主品隔离要求】：本条视频可能包含对多个不同产品、不同链接、不同款式的介绍。当前主品是：{product or '目标产品'}。你必须只选取与当前主品直接相关的句子；涉及其他链接、其他款、其他产品、让用户拍另一个链接的句子一律不要选。",
+            "【直播互动禁选】：主播回复直播间观众、回答评论区/公屏问题、让用户扣字/私信/问客服、处理观众提问的内容，不能出现在成片里，即使句子里带有产品词也不要选。",
             "",
             "成片合理性要求：",
             "1. 你必须先判断整条视频是否像一个完整、自然的带货短片，而不是直播中途突然截出来的一段。",
@@ -506,6 +666,95 @@ def write_remix_plan(path: Path, plan: dict[str, Any]) -> None:
     path.write_text(json.dumps(plan, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
+def score_remix_plan(
+    plan: dict[str, Any],
+    request: dict[str, Any] | None = None,
+    *,
+    target_duration: float | None = None,
+) -> dict[str, Any]:
+    request = request or {}
+    target = float(target_duration or plan.get("target_duration") or 25.0)
+    min_duration = max(12.0, target - 4.0)
+    max_duration = target + 3.0
+    items = [item for item in plan.get("items") or [] if isinstance(item, dict)]
+    script_text = str(plan.get("script_text") or "\n".join(str(item.get("text") or "") for item in items))
+    normalized_script = _normalize(script_text)
+    duration = _float(plan.get("duration")) or _duration(items)
+    product = str(request.get("product") or "")
+    selling_points = _text_list(request.get("selling_points"))
+    brand_terms = _text_list(request.get("brand_terms"))
+    target_terms = _target_product_terms(product, [*selling_points, *brand_terms])
+    risks: list[dict[str, Any]] = []
+
+    def add_risk(kind: str, label: str, severity: str, message: str, penalty: int) -> None:
+        risks.append(
+            {
+                "type": kind,
+                "label": label,
+                "severity": severity,
+                "message": message,
+                "penalty": penalty,
+            }
+        )
+
+    if not items:
+        add_risk("empty", "无可用片段", "high", "方案没有可导出的口播片段。", 80)
+    if PRICE_CLAIM_RE.search(normalized_script):
+        add_risk("price", "价格风险", "high", "口播中包含具体价格、到手价或金额信息。", 35)
+    if _hits(normalized_script, LIVE_INTERACTION_PATTERNS):
+        add_risk("interaction", "直播互动", "high", "口播中疑似包含回复观众、公屏、客服、私信等直播互动内容。", 30)
+    if _looks_like_other_product(normalized_script, target_terms):
+        add_risk("other_product", "疑似非主品", "high", "口播中疑似提到其他链接、其他款或非当前主品。", 35)
+
+    opening_risk = _opening_risk(items[0]) if items else ""
+    if opening_risk:
+        add_risk("opening", "开头不完整", "medium", f"第一句{opening_risk}。", 18)
+
+    close_count = sum(1 for item in items if item.get("role") == "close")
+    if close_count == 0:
+        add_risk("close", "缺少促单收尾", "medium", "方案没有售后、活动、送礼、下单理由等促单收尾。", 14)
+
+    selling_count = sum(1 for item in items if item.get("role") in {"selling_point", "demo", "proof"})
+    if selling_count < 2:
+        add_risk("selling_points", "卖点偏少", "medium", "中段卖点、场景或工艺信息偏少。", 12)
+
+    if target_terms and not any(term and term in normalized_script for term in target_terms):
+        add_risk("target_match", "主品命中弱", "medium", "口播没有明显命中当前主品、品牌热词或卖点词。", 18)
+
+    if duration < min_duration:
+        add_risk("duration_short", "时长偏短", "low", f"方案时长 {duration:.1f}s，低于建议下限 {min_duration:.0f}s。", 8)
+    elif duration > max_duration:
+        add_risk("duration_long", "时长偏长", "low", f"方案时长 {duration:.1f}s，超过建议上限 {max_duration:.0f}s。", 8)
+
+    score = max(0, 100 - sum(int(risk["penalty"]) for risk in risks))
+    high_count = sum(1 for risk in risks if risk.get("severity") == "high")
+    if high_count or score < 60:
+        level = "risk"
+        summary = "建议复核"
+    elif score < 80 or risks:
+        level = "warn"
+        summary = "基本可用"
+    else:
+        level = "good"
+        summary = "质量较好"
+
+    return {
+        "score": score,
+        "level": level,
+        "summary": summary,
+        "risks": risks,
+        "metrics": {
+            "duration": round(duration, 3),
+            "item_count": len(items),
+            "close_count": close_count,
+            "selling_count": selling_count,
+            "target_term_hits": [
+                term for term in target_terms if term and term in normalized_script
+            ][:8],
+        },
+    }
+
+
 def _plan_from_units(
     selected: list[dict[str, Any]],
     *,
@@ -519,6 +768,7 @@ def _plan_from_units(
                 "order": order,
                 "id": unit["id"],
                 "source_index": unit["source_index"],
+                "source_indexes": unit.get("source_indexes") or [unit["source_index"]],
                 "start": unit["start"],
                 "end": unit["end"],
                 "duration": unit["duration"],
@@ -692,13 +942,22 @@ def _export_ranges_for_item(
     if end <= start:
         return []
 
-    fallback = [{"start": round(start, 3), "end": round(end, 3)}]
-    source_index = item.get("source_index")
-    if not isinstance(source_index, int) or source_index < 0 or source_index >= len(transcript_segments):
+    fallback = _pad_remix_ranges(
+        [{"start": round(start, 3), "end": round(end, 3)}],
+        start,
+        end,
+        transcript_segments,
+    )
+    source_indexes = [
+        index
+        for index in item.get("source_indexes") or [item.get("source_index")]
+        if isinstance(index, int) and 0 <= index < len(transcript_segments)
+    ]
+    if not source_indexes:
         return fallback
 
-    segment = transcript_segments[source_index]
-    if not segment.words:
+    segments = [transcript_segments[index] for index in source_indexes]
+    if not any(segment.words for segment in segments):
         return fallback
 
     candidate = CandidateClip(
@@ -708,16 +967,62 @@ def _export_ranges_for_item(
         end_time=end,
         transcript=str(item.get("raw_text") or item.get("text") or ""),
         clean_transcript=str(item.get("clean_text") or item.get("text") or ""),
-        segment_indexes=[source_index],
+        segment_indexes=source_indexes,
     )
     compact = build_compact_plan(
         candidate,
-        [segment],
+        segments,
         padding=0.06,
         merge_gap=0.35,
         min_removed_duration=0.12,
     )
-    return compact.keep_ranges if compact else fallback
+    return _pad_remix_ranges(compact.keep_ranges, start, end, transcript_segments) if compact else fallback
+
+
+def _pad_remix_ranges(
+    ranges: list[dict[str, float]],
+    item_start: float,
+    item_end: float,
+    transcript_segments: list[TranscriptSegment],
+) -> list[dict[str, float]]:
+    padded: list[dict[str, float]] = []
+    for item_range in ranges:
+        try:
+            start = float(item_range["start"])
+            end = float(item_range["end"])
+        except (KeyError, TypeError, ValueError):
+            continue
+        if end <= start:
+            continue
+        prev_boundary, next_boundary = _neighbor_speech_boundaries(start, end, transcript_segments)
+        lead_padding = 0.0 if start - item_start > 0.12 else REMIX_SEGMENT_LEAD_PADDING
+        padded_start = max(0.0, item_start - lead_padding, start - lead_padding)
+        if prev_boundary is not None:
+            padded_start = max(padded_start, prev_boundary + 0.04)
+        tail_padding = 0.0 if item_end - end > 0.12 else REMIX_SEGMENT_TAIL_PADDING
+        if next_boundary is not None and tail_padding > 0:
+            gap = max(0.0, next_boundary - end)
+            tail_padding = min(tail_padding + min(gap, REMIX_SEGMENT_MAX_SILENCE_TAIL), max(0.0, gap - 0.04))
+        padded_end = min(item_end + REMIX_SEGMENT_TAIL_PADDING, end + max(0.0, tail_padding))
+        if padded_end <= padded_start:
+            continue
+        padded.append({"start": round(padded_start, 3), "end": round(padded_end, 3)})
+    return padded
+
+
+def _neighbor_speech_boundaries(
+    start: float,
+    end: float,
+    transcript_segments: list[TranscriptSegment],
+) -> tuple[float | None, float | None]:
+    prev_end: float | None = None
+    next_start: float | None = None
+    for segment in transcript_segments:
+        if segment.end <= start and (prev_end is None or segment.end > prev_end):
+            prev_end = segment.end
+        if segment.start >= end and (next_start is None or segment.start < next_start):
+            next_start = segment.start
+    return prev_end, next_start
 
 
 def _transcript_segments(items: list[dict[str, Any]]) -> list[TranscriptSegment]:
@@ -884,13 +1189,41 @@ def _product_terms(product: str, selling_points: list[str]) -> list[str]:
     return list(dict.fromkeys(terms))
 
 
-def _exclude_reason(normalized: str) -> str:
+def _target_product_terms(product: str, terms: list[str]) -> list[str]:
+    raw_terms: list[str] = [product, *terms]
+    expanded: list[str] = []
+    for item in raw_terms:
+        normalized = _normalize(item)
+        if len(normalized) < 2:
+            continue
+        expanded.append(normalized)
+        for part in re.split(r"[\s,，、/|]+", str(item or "")):
+            part_normalized = _normalize(part)
+            if len(part_normalized) >= 2:
+                expanded.append(part_normalized)
+    return list(dict.fromkeys(expanded))
+
+
+def _exclude_reason(normalized: str, target_terms: list[str] | None = None) -> str:
     if PRICE_CLAIM_RE.search(normalized):
         return "价格信息/具体售价"
+    for pattern in LIVE_INTERACTION_PATTERNS:
+        if _normalize(pattern) in normalized:
+            return "直播互动/回复观众"
     for pattern in NON_PRODUCT_PATTERNS:
         if _normalize(pattern) in normalized:
             return "非产品介绍/直播操作"
+    if _looks_like_other_product(normalized, target_terms or []):
+        return "其他链接/非主品"
     return ""
+
+
+def _looks_like_other_product(normalized: str, target_terms: list[str]) -> bool:
+    if not any(_normalize(pattern) in normalized for pattern in OTHER_PRODUCT_PATTERNS):
+        return False
+    if not target_terms:
+        return True
+    return not any(term and term in normalized for term in target_terms)
 
 
 def _hits(normalized: str, patterns: list[str]) -> list[str]:

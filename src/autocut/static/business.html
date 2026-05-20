@@ -144,6 +144,22 @@
             <!-- 列表视图 -->
             <div id="view-list" class="flex" style="flex-direction: column; flex: 1;">
                 <div class="card-title">任务列表</div>
+                <div class="job-toolbar">
+                    <select id="job-filter-brand">
+                        <option value="">全部品牌</option>
+                    </select>
+                    <select id="job-filter-product">
+                        <option value="">全部产品</option>
+                    </select>
+                    <input type="date" id="job-filter-start" title="开始日期">
+                    <input type="date" id="job-filter-end" title="结束日期">
+                    <button type="button" id="btn-clear-job-filters" class="btn btn-secondary btn-sm">清除筛选</button>
+                </div>
+                <div class="job-bulk-actions">
+                    <button type="button" id="btn-select-visible-jobs" class="btn btn-secondary btn-sm">全选当前</button>
+                    <button type="button" id="btn-clear-selected-jobs" class="btn btn-secondary btn-sm">清空选择</button>
+                    <button type="button" id="btn-batch-download-jobs" class="btn btn-primary btn-sm" disabled>批量下载 (0)</button>
+                </div>
                 <div id="jobs-container" style="flex: 1; overflow-y: auto;">
                     <div class="text-center text-muted mt-8" id="empty-state">
                         还没有任务，去左侧创建一个吧
@@ -182,7 +198,8 @@
                 </div>
                 
                 <div id="detail-remix" class="hidden flex" style="flex-direction: column; gap: 8px;">
-                    <div id="remix-all-download-wrap" class="hidden">
+                    <div class="remix-toolbar">
+                        <button type="button" id="btn-generate-remix-plan" class="btn btn-primary btn-sm">生成新方案</button>
                         <a id="link-all-plans-zip" class="btn btn-primary btn-sm text-center" target="_blank" download>全部下载 ZIP（所有方案片段）</a>
                     </div>
                     <div id="remix-plans-container" class="flex" style="flex-direction: column; gap: 12px;"></div>

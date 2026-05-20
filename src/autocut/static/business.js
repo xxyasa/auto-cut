@@ -4,13 +4,24 @@
 // Config & State
 // ==========================================
 const API_BASE = '/api/business';
+const STORAGE_KEYS = {
+  remixDuration: 'autocut_remix_duration',
+  remixPlanCount: 'autocut_remix_plan_count',
+};
+const MAX_TAGS = 200;
 const STATE = {
   token: localStorage.getItem('autocut_api_token') || '',
   pollTimer: null,
   detailPollTimer: null,
   currentJobId: null,
+  currentJob: null,
   brands: [],
   products: [],
+  jobs: [],
+  selectedJobIds: new Set(),
+  expandedChipContainers: new Set(),
+  batchDownloading: false,
+  generatingRemixPlan: false,
   uploadedFile: null,     // 单文件兼容（非 upload tab 用）
   uploadedFiles: [],      // 批量上传文件列表
   // 上一次成功渲染的任务列表签名，用于跳过无变化的 DOM 重建（性能优化）
@@ -30,6 +41,15 @@ const STATE = {
 const utils = {
   getToken() {
     return document.getElementById('api-token').value || STATE.token;
+  },
+
+  escapeHtml(value) {
+    return String(value ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#39;');
   },
   
   async fetchApi(url, options = {}) {
@@ -109,9 +129,59 @@ const utils = {
     return path.split(/[/\\]/).pop();
   },
 
-  // 把时间戳格式化为任务名称：YYYYMMDD-HHmmss-任务-seq
-  formatTaskName(ts, seq) {
-    if (!ts) return `任务-${seq}`;
+  jobBrand(job) {
+    return String(job.brand_name || '').trim();
+  },
+
+  jobProduct(job) {
+    const product = String(job.product_name || '').trim();
+    if (product) return product;
+    const display = String(job.display_name || '').trim();
+    if (!display) return '';
+    const parts = display.split('-');
+    return parts.length > 1 ? parts.slice(1).join('-') : display;
+  },
+
+  isJobDownloadable(job) {
+    return Boolean(job.downloadable) || (
+      ['done', 'partial_success'].includes(job.status) &&
+      job.artifacts &&
+      Array.isArray(job.artifacts.remix_plans) &&
+      job.artifacts.remix_plans.length > 0 &&
+      (!job.tracks_result || job.tracks_result.remix !== 'failed')
+    );
+  },
+
+  statusLabel(status) {
+    const labels = {
+      queued: '排队中',
+      downloading: '下载中',
+      running: '处理中',
+      remixing: '生成成片',
+      done: '已完成',
+      partial_success: '部分成功',
+      failed: '失败',
+    };
+    return labels[status] || status || '-';
+  },
+
+  jobPlanSummary(job) {
+    const plans = job.artifacts && Array.isArray(job.artifacts.remix_plans)
+      ? job.artifacts.remix_plans
+      : [];
+    if (plans.length === 0) return '';
+    const scores = plans
+      .map(plan => Number(plan.quality && plan.quality.score))
+      .filter(score => Number.isFinite(score));
+    const bestScore = scores.length ? Math.max(...scores) : null;
+    return bestScore === null ? `${plans.length}个方案` : `${plans.length}个方案 · 最高${bestScore}分`;
+  },
+
+  // 把时间戳格式化为任务名称：可选前缀-YYYYMMDD-HHmmss-任务-seq
+  formatTaskName(ts, seq, prefix = '') {
+    const safePrefix = String(prefix || '').trim();
+    const suffix = safePrefix ? `${safePrefix}-` : '';
+    if (!ts) return `${suffix}任务-${seq}`;
     let d;
     if (typeof ts === 'number') {
       d = new Date(ts < 1e12 ? ts * 1000 : ts);
@@ -120,11 +190,11 @@ const utils = {
     } else {
       d = new Date(ts);
     }
-    if (isNaN(d.getTime())) return `任务-${seq}`;
+    if (isNaN(d.getTime())) return `${suffix}任务-${seq}`;
     const pad = n => String(n).padStart(2, '0');
     const date = `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`;
     const time = `${pad(d.getHours())}${pad(d.getMinutes())}${pad(d.getSeconds())}`;
-    return `${date}-${time}-任务-${seq}`;
+    return `${suffix}${date}-${time}-任务-${seq}`;
   }
 };
 
@@ -181,8 +251,15 @@ const ui = {
   
   renderChips(containerId, items, onRemove) {
     const container = document.getElementById(containerId);
+    container.__chipItems = items || [];
+    container.__chipOnRemove = onRemove || null;
     container.innerHTML = '';
-    items.forEach((item, index) => {
+    const visibleItems = (items || []).slice(0, MAX_TAGS);
+    const expanded = STATE.expandedChipContainers.has(containerId);
+    container.classList.add('chip-container-collapsible');
+    container.classList.toggle('expanded', expanded);
+    container.classList.toggle('collapsed', !expanded);
+    visibleItems.forEach((item, index) => {
       const el = document.createElement('div');
       el.className = 'chip';
       el.textContent = item;
@@ -195,6 +272,32 @@ const ui = {
         el.appendChild(btn);
       }
       container.appendChild(el);
+    });
+    this.renderChipToggle(container, containerId, visibleItems.length, items.length);
+  },
+
+  renderChipToggle(container, containerId, visibleCount, totalCount) {
+    let toggle = document.getElementById(`${containerId}-toggle`);
+    if (!toggle) {
+      toggle = document.createElement('button');
+      toggle.type = 'button';
+      toggle.id = `${containerId}-toggle`;
+      toggle.className = 'chip-toggle btn btn-secondary btn-sm';
+      container.insertAdjacentElement('afterend', toggle);
+    }
+    const expanded = STATE.expandedChipContainers.has(containerId);
+    toggle.textContent = expanded ? '收起' : `展开全部${totalCount > MAX_TAGS ? `（前${MAX_TAGS}个）` : ''}`;
+    toggle.onclick = () => {
+      if (STATE.expandedChipContainers.has(containerId)) {
+        STATE.expandedChipContainers.delete(containerId);
+      } else {
+        STATE.expandedChipContainers.add(containerId);
+      }
+      this.renderChips(containerId, container.__chipItems || [], container.__chipOnRemove || null);
+    };
+    requestAnimationFrame(() => {
+      const shouldShow = totalCount > MAX_TAGS || container.scrollHeight > container.clientHeight + 2 || expanded;
+      toggle.hidden = !shouldShow || visibleCount === 0;
     });
   },
   
@@ -225,52 +328,72 @@ const formState = {
   // 新建产品 modal 临时状态
   newProductSellingPoints: [],
   newProductAssocs: [],
-  
-  addSellingPoint(val) {
-    if (!val || this.sellingPoints.includes(val)) return;
-    this.sellingPoints.push(val);
+
+  pushTag(list, val) {
+    if (!val || list.includes(val)) return false;
+    if (list.length >= MAX_TAGS) {
+      ui.toast(`最多支持 ${MAX_TAGS} 个标签`, 'warning');
+      return false;
+    }
+    list.push(val);
+    return true;
+  },
+
+  renderSellingPoints() {
     ui.renderChips('selling-points-chips', this.sellingPoints, i => {
       this.sellingPoints.splice(i, 1);
-      ui.renderChips('selling-points-chips', this.sellingPoints, this.sellingPoints);
+      this.renderSellingPoints();
+    });
+  },
+
+  renderAssocWords() {
+    ui.renderChips('assoc-chips', this.assocWords, i => {
+      this.assocWords.splice(i, 1);
+      this.renderAssocWords();
+      apiOps.saveAssocDebounced();
+    });
+  },
+
+  renderNewProductSellingPoints() {
+    ui.renderChips('new-product-selling-points-chips', this.newProductSellingPoints, i => {
+      this.newProductSellingPoints.splice(i, 1);
+      this.renderNewProductSellingPoints();
+    });
+  },
+
+  renderNewProductAssocs() {
+    ui.renderChips('new-product-assoc-chips', this.newProductAssocs, i => {
+      this.newProductAssocs.splice(i, 1);
+      this.renderNewProductAssocs();
     });
   },
   
+  addSellingPoint(val) {
+    if (!this.pushTag(this.sellingPoints, val)) return;
+    this.renderSellingPoints();
+  },
+  
   addAssoc(val) {
-    if (!val || this.assocWords.includes(val)) return;
-    this.assocWords.push(val);
-    ui.renderChips('assoc-chips', this.assocWords, i => {
-      this.assocWords.splice(i, 1);
-      ui.renderChips('assoc-chips', this.assocWords, this.assocWords);
-      apiOps.saveAssocDebounced();
-    });
+    if (!this.pushTag(this.assocWords, val)) return;
+    this.renderAssocWords();
     apiOps.saveAssocDebounced();
   },
 
   addNewProductSellingPoint(val) {
-    if (!val || this.newProductSellingPoints.includes(val)) return;
-    this.newProductSellingPoints.push(val);
-    ui.renderChips('new-product-selling-points-chips', this.newProductSellingPoints, i => {
-      this.newProductSellingPoints.splice(i, 1);
-      ui.renderChips('new-product-selling-points-chips', this.newProductSellingPoints, this.newProductSellingPoints);
-    });
+    if (!this.pushTag(this.newProductSellingPoints, val)) return;
+    this.renderNewProductSellingPoints();
   },
 
   addNewProductAssoc(val) {
-    if (!val || this.newProductAssocs.includes(val)) return;
-    this.newProductAssocs.push(val);
-    ui.renderChips('new-product-assoc-chips', this.newProductAssocs, i => {
-      this.newProductAssocs.splice(i, 1);
-      ui.renderChips('new-product-assoc-chips', this.newProductAssocs, this.newProductAssocs);
-    });
+    if (!this.pushTag(this.newProductAssocs, val)) return;
+    this.renderNewProductAssocs();
   },
 
   resetNewProduct() {
     this.newProductSellingPoints = [];
     this.newProductAssocs = [];
-    const spChips = document.getElementById('new-product-selling-points-chips');
-    const asChips = document.getElementById('new-product-assoc-chips');
-    if (spChips) spChips.innerHTML = '';
-    if (asChips) asChips.innerHTML = '';
+    this.renderNewProductSellingPoints();
+    this.renderNewProductAssocs();
     const nameInput = document.getElementById('new-product-name');
     const spInput = document.getElementById('new-product-selling-point-input');
     const asInput = document.getElementById('new-product-assoc-input');
@@ -364,13 +487,10 @@ const apiOps = {
     // 记录当前产品，用于即时 PATCH 保存联想词
     STATE.currentBrandId = STATE.brandCombo ? STATE.brandCombo.getValue() : null;
     STATE.currentProductId = product.id || null;
-    formState.sellingPoints = [...(product.selling_points || [])];
-    formState.assocWords = [...(product.associations || [])];
-    ui.renderChips('assoc-chips', formState.assocWords, i => {
-      formState.assocWords.splice(i, 1);
-      ui.renderChips('assoc-chips', formState.assocWords, formState.assocWords);
-      apiOps.saveAssocDebounced();
-    });
+    formState.sellingPoints = [...(product.selling_points || [])].slice(0, MAX_TAGS);
+    formState.assocWords = [...(product.associations || [])].slice(0, MAX_TAGS);
+    formState.renderSellingPoints();
+    formState.renderAssocWords();
   },
 
   // 500ms debounce，防止快速多次修改时频繁请求
@@ -639,56 +759,19 @@ const apiOps = {
   },
   
   async pollJobs() {
-    const res = await utils.fetchApi('/jobs?limit=50');
+    const res = await utils.fetchApi('/jobs?limit=200');
     if (!res || !res.jobs) return;
-    
-    const container = document.getElementById('jobs-list');
-    const emptyState = document.getElementById('empty-state');
-    
-    if (res.jobs.length === 0) {
-      if (container.childElementCount > 0) container.innerHTML = '';
-      emptyState.classList.remove('hidden');
-      STATE.lastJobsSignature = '';
-      return;
-    }
-    
-    emptyState.classList.add('hidden');
 
     // 计算签名：仅包含影响渲染的字段。若与上一次一致，跳过 DOM 重建，
     // 避免每次 5s 轮询打断用户交互（例如打开中的 <select> 下拉）。
     const signature = res.jobs
-      .map(j => `${j.id}|${j.status}|${j.stage || ''}|${j.progress || 0}|${j.queued_at || ''}|${j.updated_at || ''}`)
+      .map(j => `${j.id}|${j.display_name || ''}|${j.brand_name || ''}|${j.product_name || ''}|${j.downloadable ? 1 : 0}|${j.status}|${j.stage || ''}|${j.progress || 0}|${j.queued_at || ''}|${j.updated_at || ''}`)
       .join(';');
     if (signature !== STATE.lastJobsSignature) {
-      const totalJobs = res.jobs.length;
-      const frag = document.createDocumentFragment();
-      res.jobs.forEach((job, idx) => {
-        const el = document.createElement('div');
-        el.className = 'job-item';
-        el.onclick = () => showJobDetail(job.id);
-
-        // 任务名称：YYYYMMDD-HHmmss-任务-序号（最旧的是001）
-        const seq = String(totalJobs - idx).padStart(3, '0');
-        const taskName = utils.formatTaskName(job.queued_at || job.updated_at, seq);
-
-        el.innerHTML = `
-          <div class="job-info">
-            <div class="job-id">${taskName}</div>
-            <div class="job-meta">
-              <span>${utils.formatDate(job.queued_at || job.updated_at)}</span>
-              <span>${job.stage || '-'}</span>
-            </div>
-            ${job.status === 'running' || job.status === 'downloading' ? `
-            <div class="job-progress-bar">
-              <div class="job-progress-fill" style="width:${Math.round((job.progress || 0) * 100)}%"></div>
-            </div>` : ''}
-          </div>
-          <div class="badge ${job.status}">${job.status}</div>
-        `;
-        frag.appendChild(el);
-      });
-      // 一次性 replace，比 innerHTML='' + 多次 appendChild 更平滑
-      container.replaceChildren(frag);
+      STATE.jobs = res.jobs;
+      syncSelectedJobsWithLatestData();
+      updateJobFilterOptions(res.jobs);
+      renderJobList();
       STATE.lastJobsSignature = signature;
     }
     
@@ -709,6 +792,217 @@ const apiOps = {
     }
   }
 };
+
+function syncSelectedJobsWithLatestData() {
+  const byId = new Map(STATE.jobs.map(job => [job.id, job]));
+  for (const jobId of Array.from(STATE.selectedJobIds)) {
+    const job = byId.get(jobId);
+    if (!job || !utils.isJobDownloadable(job)) {
+      STATE.selectedJobIds.delete(jobId);
+    }
+  }
+}
+
+function updateJobFilterOptions(jobs) {
+  const brandSelect = document.getElementById('job-filter-brand');
+  const productSelect = document.getElementById('job-filter-product');
+  if (!brandSelect || !productSelect) return;
+  const currentBrand = brandSelect.value;
+  const currentProduct = productSelect.value;
+  const brands = Array.from(new Set(jobs.map(utils.jobBrand).filter(Boolean))).sort();
+  const products = Array.from(new Set(
+    jobs
+      .filter(job => !currentBrand || utils.jobBrand(job) === currentBrand)
+      .map(utils.jobProduct)
+      .filter(Boolean)
+  )).sort();
+  renderSelectOptions(brandSelect, '全部品牌', brands, currentBrand);
+  renderSelectOptions(productSelect, '全部产品', products, currentProduct);
+}
+
+function renderSelectOptions(select, emptyLabel, values, currentValue) {
+  select.innerHTML = `<option value="">${emptyLabel}</option>`;
+  values.forEach(value => {
+    const option = document.createElement('option');
+    option.value = value;
+    option.textContent = value;
+    select.appendChild(option);
+  });
+  select.value = values.includes(currentValue) ? currentValue : '';
+}
+
+function filteredJobs() {
+  const brand = document.getElementById('job-filter-brand')?.value || '';
+  const product = document.getElementById('job-filter-product')?.value || '';
+  const start = document.getElementById('job-filter-start')?.value || '';
+  const end = document.getElementById('job-filter-end')?.value || '';
+  const startTime = start ? new Date(`${start}T00:00:00`).getTime() : null;
+  const endTime = end ? new Date(`${end}T23:59:59.999`).getTime() : null;
+  return STATE.jobs.filter(job => {
+    if (brand && utils.jobBrand(job) !== brand) return false;
+    if (product && utils.jobProduct(job) !== product) return false;
+    const ts = new Date(job.queued_at || job.updated_at || 0).getTime();
+    if (startTime !== null && (!ts || ts < startTime)) return false;
+    if (endTime !== null && (!ts || ts > endTime)) return false;
+    return true;
+  });
+}
+
+function renderJobList() {
+  const container = document.getElementById('jobs-list');
+  const emptyState = document.getElementById('empty-state');
+  if (!container || !emptyState) return;
+
+  const jobs = filteredJobs();
+  if (STATE.jobs.length === 0) {
+    container.replaceChildren();
+    emptyState.textContent = '还没有任务，去左侧创建一个吧';
+    emptyState.classList.remove('hidden');
+    updateBatchDownloadButton();
+    return;
+  }
+  if (jobs.length === 0) {
+    container.replaceChildren();
+    emptyState.textContent = '没有符合筛选条件的任务';
+    emptyState.classList.remove('hidden');
+    updateBatchDownloadButton();
+    return;
+  }
+
+  emptyState.classList.add('hidden');
+  const totalJobs = jobs.length;
+  const frag = document.createDocumentFragment();
+  jobs.forEach((job, idx) => {
+    const downloadable = utils.isJobDownloadable(job);
+    const checked = STATE.selectedJobIds.has(job.id);
+    const el = document.createElement('div');
+    el.className = `job-item${downloadable ? '' : ' job-item-disabled-select'}`;
+
+    const seq = String(totalJobs - idx).padStart(3, '0');
+    const taskName = utils.formatTaskName(job.queued_at || job.updated_at, seq, job.display_name || '');
+    const planSummary = utils.jobPlanSummary(job);
+    el.innerHTML = `
+      <label class="job-select" title="${downloadable ? '选择用于批量下载' : '仅已完成且有成片方案的任务可批量下载'}">
+        <input type="checkbox" data-job-select="${utils.escapeHtml(job.id)}" ${checked ? 'checked' : ''} ${downloadable ? '' : 'disabled'}>
+      </label>
+      <div class="job-open-area" role="button" tabindex="0">
+        <div class="job-info">
+          <div class="job-id">${utils.escapeHtml(taskName)}</div>
+          <div class="job-meta">
+            <span>${utils.escapeHtml(utils.formatDate(job.queued_at || job.updated_at))}</span>
+            <span>${utils.escapeHtml(job.stage || '-')}</span>
+            ${planSummary ? `<span>${utils.escapeHtml(planSummary)}</span>` : ''}
+          </div>
+          ${job.status === 'running' || job.status === 'downloading' ? `
+          <div class="job-progress-bar">
+            <div class="job-progress-fill" style="width:${Math.round((job.progress || 0) * 100)}%"></div>
+          </div>` : ''}
+        </div>
+        <div class="badge ${job.status}">${utils.escapeHtml(utils.statusLabel(job.status))}</div>
+      </div>
+    `;
+    const checkbox = el.querySelector('[data-job-select]');
+    const openArea = el.querySelector('.job-open-area');
+    checkbox.addEventListener('click', event => event.stopPropagation());
+    checkbox.addEventListener('change', event => {
+      if (event.target.checked) {
+        STATE.selectedJobIds.add(job.id);
+      } else {
+        STATE.selectedJobIds.delete(job.id);
+      }
+      updateBatchDownloadButton();
+    });
+    openArea.addEventListener('click', () => showJobDetail(job.id));
+    openArea.addEventListener('keydown', event => {
+      if (event.key === 'Enter' || event.key === ' ') {
+        event.preventDefault();
+        showJobDetail(job.id);
+      }
+    });
+    frag.appendChild(el);
+  });
+  container.replaceChildren(frag);
+  updateBatchDownloadButton();
+}
+
+function visibleDownloadableJobs() {
+  return filteredJobs().filter(utils.isJobDownloadable);
+}
+
+function updateBatchDownloadButton() {
+  const btn = document.getElementById('btn-batch-download-jobs');
+  if (!btn) return;
+  const count = STATE.selectedJobIds.size;
+  btn.textContent = STATE.batchDownloading ? `正在打包 (${count})...` : `批量下载 (${count})`;
+  btn.disabled = count === 0 || STATE.batchDownloading;
+}
+
+function selectVisibleJobs() {
+  visibleDownloadableJobs().forEach(job => STATE.selectedJobIds.add(job.id));
+  renderJobList();
+}
+
+function clearSelectedJobs() {
+  STATE.selectedJobIds.clear();
+  renderJobList();
+}
+
+async function batchDownloadSelectedJobs() {
+  const ids = Array.from(STATE.selectedJobIds);
+  if (ids.length === 0 || STATE.batchDownloading) return;
+  const url = `${API_BASE}/jobs/batch-remix-segments.zip?ids=${encodeURIComponent(ids.join(','))}`;
+  STATE.batchDownloading = true;
+  updateBatchDownloadButton();
+  try {
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${utils.getToken()}`
+      }
+    });
+    if (!response.ok) {
+      let message = `批量下载失败: ${response.status}`;
+      try {
+        const data = await response.json();
+        if (data && data.detail) message = typeof data.detail === 'string' ? data.detail : JSON.stringify(data.detail);
+      } catch (_) {}
+      ui.toast(message, 'error');
+      return;
+    }
+    const blob = await response.blob();
+    const downloadUrl = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = downloadUrl;
+    link.download = filenameFromDisposition(response.headers.get('content-disposition')) || `autocut_batch_remix_segments_${Date.now()}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    setTimeout(() => URL.revokeObjectURL(downloadUrl), 30000);
+    ui.toast('批量下载已生成', 'success');
+  } catch (err) {
+    console.error(err);
+    ui.toast('批量下载失败，请重试', 'error');
+  } finally {
+    STATE.batchDownloading = false;
+    updateBatchDownloadButton();
+  }
+}
+
+function filenameFromDisposition(disposition) {
+  if (!disposition) return '';
+  const utf8Match = disposition.match(/filename\*=UTF-8''([^;]+)/i);
+  if (utf8Match) return decodeURIComponent(utf8Match[1]);
+  const match = disposition.match(/filename="?([^";]+)"?/i);
+  return match ? match[1] : '';
+}
+
+function clearJobFilters() {
+  ['job-filter-brand', 'job-filter-product', 'job-filter-start', 'job-filter-end'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.value = '';
+  });
+  updateJobFilterOptions(STATE.jobs);
+  renderJobList();
+}
 
 // ==========================================
 // Detail View Logic
@@ -732,6 +1026,7 @@ function showJobDetail(id) {
 
 function hideJobDetail() {
   STATE.currentJobId = null;
+  STATE.currentJob = null;
   document.getElementById('view-detail').classList.add('hidden');
   document.getElementById('view-detail').classList.remove('flex');
   document.getElementById('view-list').classList.remove('hidden');
@@ -758,11 +1053,12 @@ async function fetchJobDetailOnce(id) {
 }
 
 function updateDetailView(job) {
+  STATE.currentJob = job;
   document.getElementById('detail-id').textContent = job.id;
   
   const statusEl = document.getElementById('detail-status');
   statusEl.className = `badge ${job.status}`;
-  statusEl.textContent = job.status;
+  statusEl.textContent = utils.statusLabel(job.status);
   
   document.getElementById('detail-stage').textContent = job.stage || '-';
   document.getElementById('detail-progress').style.width = `${(job.progress || 0) * 100}%`;
@@ -812,16 +1108,12 @@ function renderRemixPlans(jobId, plans) {
   container.innerHTML = '';
 
   // 全部下载按钮：有多个方案时才显示
-  const allDownloadWrap = document.getElementById('remix-all-download-wrap');
   const linkAllPlans = document.getElementById('link-all-plans-zip');
-  if (allDownloadWrap && linkAllPlans) {
-    if (plans.length > 1) {
-      linkAllPlans.href = `/api/business/jobs/${jobId}/artifacts/${jobId}_all_plans_segments.zip`;
-      allDownloadWrap.classList.remove('hidden');
-    } else {
-      allDownloadWrap.classList.add('hidden');
-    }
+  if (linkAllPlans) {
+    linkAllPlans.href = `/api/business/jobs/${jobId}/artifacts/${jobId}_all_plans_segments.zip`;
+    linkAllPlans.classList.toggle('hidden', plans.length <= 1);
   }
+  updateGenerateRemixPlanButton(plans);
 
   plans.forEach((plan, idx) => {
     const mp4 = plan.mp4 || plan.video_path || '';
@@ -829,20 +1121,103 @@ function renderRemixPlans(jobId, plans) {
     if (!fn) return;
     const url = `/api/business/jobs/${jobId}/artifacts/${fn}`;
     const zipUrl = `/api/business/jobs/${jobId}/artifacts/${zipNameForRemixPlan(jobId, plan, idx)}`;
+    const scriptText = remixPlanScriptText(plan);
+    const quality = plan.quality || {};
+    const risks = Array.isArray(quality.risks) ? quality.risks : [];
+    const qualityLevel = quality.level || 'unknown';
+    const qualityScore = Number.isFinite(Number(quality.score)) ? Number(quality.score) : null;
     const card = document.createElement('div');
-    card.className = 'card';
-    card.style.padding = '12px';
+    card.className = 'card remix-plan-card';
     card.innerHTML = `
       <div class="flex justify-between items-center mb-2">
         <strong>${plan.label || `方案 ${idx + 1}`}</strong>
-        <span class="text-sm text-muted">${plan.duration ? `${Number(plan.duration).toFixed(1)}s` : ''}${plan.duplicate ? ' · 可能重复' : ''}</span>
+        <div class="remix-plan-summary">
+          ${qualityScore === null ? '' : `<span class="quality-pill quality-${utils.escapeHtml(qualityLevel)}">${qualityScore}分 · ${utils.escapeHtml(quality.summary || qualityLevel)}</span>`}
+          <span class="text-sm text-muted">${plan.duration ? `${Number(plan.duration).toFixed(1)}s` : ''}${plan.duplicate ? ' · 可能重复' : ''}</span>
+        </div>
       </div>
-      <div class="video-container"><video controls src="${url}"></video></div>
-      <a class="btn btn-secondary btn-sm text-center" href="${url}" target="_blank" download>合并下载 MP4</a>
-      <a class="btn btn-secondary btn-sm text-center" href="${zipUrl}" target="_blank" download>分开下载 ZIP</a>
+      ${risks.length ? `<div class="remix-risk-strip">${risks.slice(0, 5).map(risk => `
+        <span class="risk-chip risk-${utils.escapeHtml(risk.severity || 'low')}" title="${utils.escapeHtml(risk.message || '')}">${utils.escapeHtml(risk.label || risk.type || '风险')}</span>
+      `).join('')}</div>` : '<div class="remix-risk-strip"><span class="risk-chip risk-good">未发现明显风险</span></div>'}
+      <div class="remix-plan-body">
+        <div class="remix-plan-video">
+          <div class="video-container"><video controls src="${url}"></video></div>
+          <div class="remix-plan-actions">
+            <a class="btn btn-secondary btn-sm text-center" href="${url}" target="_blank" download>合并下载 MP4</a>
+            <a class="btn btn-secondary btn-sm text-center" href="${zipUrl}" target="_blank" download>分开下载 ZIP</a>
+          </div>
+        </div>
+        <div class="remix-plan-script">
+          <div class="remix-plan-script-title">
+            <span>口播文案</span>
+            ${risks.length ? `<span class="text-muted">${risks.length} 个提示</span>` : ''}
+          </div>
+          <div class="remix-plan-script-text">${scriptText ? utils.escapeHtml(scriptText) : '<span class="text-muted">暂无文案</span>'}</div>
+          ${risks.length ? `<div class="remix-risk-notes">${risks.slice(0, 4).map(risk => `
+            <div><strong>${utils.escapeHtml(risk.label || risk.type || '提示')}：</strong>${utils.escapeHtml(risk.message || '')}</div>
+          `).join('')}</div>` : ''}
+        </div>
+      </div>
     `;
     container.appendChild(card);
   });
+}
+
+function updateGenerateRemixPlanButton(plans) {
+  const btn = document.getElementById('btn-generate-remix-plan');
+  if (!btn) return;
+  if (STATE.generatingRemixPlan) {
+    btn.disabled = true;
+    btn.textContent = '生成中...';
+    return;
+  }
+  if (plans.length >= 5) {
+    btn.disabled = true;
+    btn.textContent = '已达到方案生成上限';
+    return;
+  }
+  btn.disabled = false;
+  btn.textContent = '生成新方案';
+}
+
+async function generateRemixPlan() {
+  if (!STATE.currentJobId || STATE.generatingRemixPlan) return;
+  const currentPlans = normalizeRemixPlans(STATE.currentJob || { artifacts: {} });
+  if (currentPlans.length >= 5) {
+    updateGenerateRemixPlanButton(currentPlans);
+    return;
+  }
+  STATE.generatingRemixPlan = true;
+  updateGenerateRemixPlanButton(currentPlans);
+  try {
+    const updatedJob = await utils.fetchApi(`/jobs/${STATE.currentJobId}/remix-plans`, {
+      method: 'POST',
+      body: {
+        stream: false
+      }
+    });
+    if (updatedJob) {
+      ui.toast('新方案已生成', 'success');
+      updateDetailView(updatedJob);
+      apiOps.pollJobs();
+    }
+  } finally {
+    STATE.generatingRemixPlan = false;
+    const refreshedPlans = normalizeRemixPlans(STATE.currentJob || { artifacts: {} });
+    updateGenerateRemixPlanButton(refreshedPlans);
+  }
+}
+
+function remixPlanScriptText(plan) {
+  if (plan.script_text) return String(plan.script_text).trim();
+  if (Array.isArray(plan.items)) {
+    return plan.items
+      .map(item => item.text || item.clean_text || item.raw_text || '')
+      .filter(Boolean)
+      .join('\n')
+      .trim();
+  }
+  return '';
 }
 
 function zipNameForRemixPlan(jobId, plan, idx) {
@@ -879,6 +1254,30 @@ function bindEvents() {
   
   document.getElementById('btn-refresh').addEventListener('click', () => {
     apiOps.pollJobs();
+  });
+
+  document.getElementById('job-filter-brand').addEventListener('change', () => {
+    updateJobFilterOptions(STATE.jobs);
+    renderJobList();
+  });
+  ['job-filter-product', 'job-filter-start', 'job-filter-end'].forEach(id => {
+    document.getElementById(id).addEventListener('change', renderJobList);
+  });
+  document.getElementById('btn-clear-job-filters').addEventListener('click', clearJobFilters);
+  document.getElementById('btn-select-visible-jobs').addEventListener('click', selectVisibleJobs);
+  document.getElementById('btn-clear-selected-jobs').addEventListener('click', clearSelectedJobs);
+  document.getElementById('btn-batch-download-jobs').addEventListener('click', batchDownloadSelectedJobs);
+  document.getElementById('btn-generate-remix-plan').addEventListener('click', generateRemixPlan);
+
+  document.getElementById('remix-duration').addEventListener('change', e => {
+    const value = Math.min(60, Math.max(5, parseFloat(e.target.value || '30')));
+    e.target.value = value;
+    localStorage.setItem(STORAGE_KEYS.remixDuration, String(value));
+  });
+  document.getElementById('remix-plan-count').addEventListener('change', e => {
+    const value = Math.min(5, Math.max(1, parseInt(e.target.value || '2', 10)));
+    e.target.value = value;
+    localStorage.setItem(STORAGE_KEYS.remixPlanCount, String(value));
   });
   
   // Product Mode Toggle
@@ -1045,6 +1444,8 @@ function bindEvents() {
 }
 
 function init() {
+  restoreRemixSettings();
+
   // 实例化 Combobox（必须在 bindEvents/loadBrands 之前，因为 STATE.*Combo 会被它们引用）
   STATE.brandCombo = new Combobox(document.getElementById('brand-combobox'), {
     placeholder: '-- 选择品牌 --',
@@ -1090,6 +1491,19 @@ function init() {
         apiOps.pollJobs();
       }
     }, 5000);
+  }
+}
+
+function restoreRemixSettings() {
+  const durationInput = document.getElementById('remix-duration');
+  const planCountInput = document.getElementById('remix-plan-count');
+  const storedDuration = parseFloat(localStorage.getItem(STORAGE_KEYS.remixDuration) || '');
+  if (Number.isFinite(storedDuration)) {
+    durationInput.value = Math.min(60, Math.max(5, storedDuration));
+  }
+  const storedPlanCount = parseInt(localStorage.getItem(STORAGE_KEYS.remixPlanCount) || '', 10);
+  if (Number.isFinite(storedPlanCount)) {
+    planCountInput.value = Math.min(5, Math.max(1, storedPlanCount));
   }
 }
 

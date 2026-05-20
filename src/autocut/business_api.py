@@ -47,6 +47,7 @@ try:
     )
     from fastapi.responses import FileResponse
     from pydantic import BaseModel, Field
+    from starlette.background import BackgroundTask
 except ImportError as exc:  # pragma: no cover
     raise RuntimeError(
         "Install API dependencies with: pip install -e '.[api]'"
@@ -55,7 +56,9 @@ except ImportError as exc:  # pragma: no cover
 from . import brand_repo, jobs, oss
 from .auth import require_token
 from .exporter import export_segments_zip
-from .remix import remix_export_segments
+from .remix import remix_export_segments, score_remix_plan
+
+MAX_REMIX_PLANS = 5
 
 
 # ---------- Pydantic 模型 ----------
@@ -63,24 +66,24 @@ from .remix import remix_export_segments
 
 class BrandCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    associations: list[str] = Field(default_factory=list)
+    associations: list[str] = Field(default_factory=list, max_length=200)
 
 
 class BrandPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    associations: Optional[list[str]] = None
+    associations: Optional[list[str]] = Field(default=None, max_length=200)
 
 
 class ProductCreate(BaseModel):
     name: str = Field(..., min_length=1, max_length=128)
-    selling_points: list[str] = Field(default_factory=list)
-    associations: list[str] = Field(default_factory=list)
+    selling_points: list[str] = Field(default_factory=list, max_length=200)
+    associations: list[str] = Field(default_factory=list, max_length=200)
 
 
 class ProductPatch(BaseModel):
     name: Optional[str] = Field(default=None, min_length=1, max_length=128)
-    selling_points: Optional[list[str]] = None
-    associations: Optional[list[str]] = None
+    selling_points: Optional[list[str]] = Field(default=None, max_length=200)
+    associations: Optional[list[str]] = Field(default=None, max_length=200)
 
 
 # ---------- Router ----------
@@ -213,7 +216,7 @@ def delete_product_route(brand_id: str, product_id: str):
 
 class SuggestAssociationsPayload(BaseModel):
     product_name: str = Field(..., min_length=1, max_length=128)
-    selling_points: list[str] = Field(default_factory=list)
+    selling_points: list[str] = Field(default_factory=list, max_length=200)
 
 
 @router.post("/brands/{brand_id}/suggest-associations")
@@ -347,8 +350,8 @@ class BrandProductSpec(BaseModel):
     brand_id: Optional[str] = None
     product_id: Optional[str] = None
     product: Optional[str] = Field(default=None, max_length=128)
-    selling_points: list[str] = Field(default_factory=list)
-    extra_terms: list[str] = Field(default_factory=list)
+    selling_points: list[str] = Field(default_factory=list, max_length=200)
+    extra_terms: list[str] = Field(default_factory=list, max_length=200)
 
 
 class RemixSpec(BaseModel):
@@ -372,6 +375,11 @@ class JobCreate(BaseModel):
     asr_compute_type: str = "int8"
     asr_beam_size: int = 5
     transcript_path: Optional[str] = None
+
+
+class RemixPlanCreate(BaseModel):
+    stream: bool = False
+    model: Optional[str] = None
 
 
 # ---------- Runner ----------
@@ -531,7 +539,7 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                 exports_dir.mkdir(parents=True, exist_ok=True)
                 remix_plans: list[dict[str, Any]] = []
                 seen_orders: set[tuple[str, ...]] = set()
-                plan_count = payload.remix.plan_count if payload.remix.use_llm else 1
+                plan_count = min(MAX_REMIX_PLANS, payload.remix.plan_count) if payload.remix.use_llm else 1
                 for plan_index in range(1, plan_count + 1):
                     jobs.update_status(
                         job,
@@ -576,6 +584,11 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                     plan["variant_index"] = plan_index
                     plan["variant_count"] = plan_count
                     plan["duplicate"] = False
+                    plan["quality"] = score_remix_plan(
+                        plan,
+                        request,
+                        target_duration=payload.remix.target_duration,
+                    )
                     seen_orders.add(order_key)
                     output_path = exports_dir / f"{job.id}_remix_{int(round(payload.remix.target_duration))}s_v{plan_index}.mp4"
                     warning = export_remix_plan(result, plan, output_path)
@@ -590,6 +603,8 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                             "mp4": str(output_path),
                             "plan": str(plan_path),
                             "duration": plan.get("duration"),
+                            "script_text": plan.get("script_text", ""),
+                            "quality": plan.get("quality", {}),
                             "ordered_ids": plan.get("ordered_ids", []),
                             "duplicate": bool(plan.get("duplicate")),
                         }
@@ -631,8 +646,15 @@ def _make_runner(payload: JobCreate, runs_root: Path):
 
 
 def _job_to_dict(job: jobs.Job) -> dict[str, Any]:
+    artifacts = _artifacts_with_remix_scripts(job)
+    display_name = _job_display_name(job, artifacts)
+    brand_name, product_name = _job_brand_product_names(job, artifacts)
     return {
         "id": job.id,
+        "display_name": display_name,
+        "brand_name": brand_name,
+        "product_name": product_name,
+        "downloadable": _job_has_remix_segments(job),
         "status": job.status,
         "stage": job.stage,
         "progress": job.progress,
@@ -642,10 +664,137 @@ def _job_to_dict(job: jobs.Job) -> dict[str, Any]:
         "updated_at": job.updated_at,
         "tracks": job.tracks,
         "tracks_result": job.tracks_result,
-        "artifacts": job.artifacts,
+        "artifacts": artifacts,
         "error": job.error,
         "failure_kind": job.failure_kind,
     }
+
+
+def _job_display_name(job: jobs.Job, artifacts: dict[str, Any] | None = None) -> str:
+    artifacts = artifacts or job.artifacts or {}
+    for key in ("display_name", "product_display_name"):
+        value = str(artifacts.get(key) or "").strip()
+        if value:
+            return value
+    value = str((job.request or {}).get("display_name") or "").strip()
+    if value:
+        return value
+    brand_product = (job.request or {}).get("brand_product")
+    if isinstance(brand_product, dict):
+        return _brand_product_display_name(brand_product)
+    return ""
+
+
+def _job_brand_product_names(job: jobs.Job, artifacts: dict[str, Any] | None = None) -> tuple[str, str]:
+    artifacts = artifacts or job.artifacts or {}
+    brand_name = str(artifacts.get("brand_name") or "").strip()
+    product_name = str(artifacts.get("product_name") or "").strip()
+    brand_product = (job.request or {}).get("brand_product")
+    if isinstance(brand_product, dict):
+        resolved_brand, resolved_product = _brand_product_names(brand_product)
+        brand_name = brand_name or resolved_brand
+        product_name = product_name or resolved_product
+    if not product_name:
+        display_name = str((job.request or {}).get("display_name") or artifacts.get("display_name") or "").strip()
+        if display_name:
+            parts = display_name.split("-", 1)
+            if len(parts) == 2 and not brand_name:
+                brand_name, product_name = parts[0], parts[1]
+            else:
+                product_name = display_name
+    return brand_name, product_name
+
+
+def _brand_product_display_name(brand_product: dict[str, Any] | BrandProductSpec) -> str:
+    brand_name, product_name = _brand_product_names(brand_product)
+    parts = [part for part in (brand_name, product_name) if part]
+    return "-".join(parts)
+
+
+def _brand_product_names(brand_product: dict[str, Any] | BrandProductSpec) -> tuple[str, str]:
+    if isinstance(brand_product, BrandProductSpec):
+        spec = brand_product.model_dump()
+    else:
+        spec = dict(brand_product)
+
+    brand_name = ""
+    product_name = str(spec.get("product") or "").strip()
+    brand_id = str(spec.get("brand_id") or "").strip()
+    product_id = str(spec.get("product_id") or "").strip()
+
+    if brand_id:
+        try:
+            brand = brand_repo.get_brand(brand_id)
+            brand_name = str(brand.get("name") or "").strip()
+            if product_id:
+                product = next(
+                    (p for p in brand_repo.list_products(brand_id) if p.get("id") == product_id),
+                    None,
+                )
+                if product:
+                    product_name = str(product.get("name") or "").strip()
+        except brand_repo.BrandRepoError:
+            pass
+
+    return brand_name, product_name
+
+
+def _artifacts_with_remix_scripts(job: jobs.Job) -> dict[str, Any]:
+    artifacts = dict(job.artifacts or {})
+    plans = artifacts.get("remix_plans")
+    if not isinstance(plans, list):
+        return artifacts
+
+    metadata_dir = (_runs_dir() / job.id / "metadata").resolve()
+    enriched_plans: list[dict[str, Any]] = []
+    for plan in plans:
+        if not isinstance(plan, dict):
+            enriched_plans.append(plan)
+            continue
+        enriched = dict(plan)
+        if not enriched.get("script_text") or not enriched.get("quality"):
+            plan_data = _read_remix_plan_data(enriched.get("plan"), metadata_dir)
+            if plan_data:
+                if not enriched.get("script_text"):
+                    script_text = _remix_plan_script_text(plan_data)
+                    if script_text:
+                        enriched["script_text"] = script_text
+                if not enriched.get("quality"):
+                    enriched["quality"] = score_remix_plan(
+                        plan_data,
+                        job.request,
+                        target_duration=plan_data.get("target_duration"),
+                    )
+        enriched_plans.append(enriched)
+    artifacts["remix_plans"] = enriched_plans
+    return artifacts
+
+
+def _read_remix_plan_data(plan_path_value: Any, metadata_dir: Path) -> dict[str, Any]:
+    if not plan_path_value:
+        return {}
+    try:
+        plan_path = Path(str(plan_path_value)).resolve()
+        plan_path.relative_to(metadata_dir)
+        data = json.loads(plan_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError, json.JSONDecodeError):
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _remix_plan_script_text(plan: dict[str, Any]) -> str:
+    script_text = str(plan.get("script_text") or "").strip()
+    if script_text:
+        return script_text
+    items = plan.get("items")
+    if isinstance(items, list):
+        return "\n".join(
+            str(item.get("text") or item.get("clean_text") or item.get("raw_text") or "").strip()
+            for item in items
+            if isinstance(item, dict)
+            and str(item.get("text") or item.get("clean_text") or item.get("raw_text") or "").strip()
+        )
+    return ""
 
 
 @router.post("/jobs", status_code=status.HTTP_201_CREATED)
@@ -660,8 +809,10 @@ def create_job_route(payload: JobCreate = Body(...)):
     runs_root = _runs_dir()
     runs_root.mkdir(parents=True, exist_ok=True)
     runner = _make_runner(payload, runs_root)
+    request_payload = payload.model_dump()
+    request_payload["display_name"] = _brand_product_display_name(payload.brand_product)
     job_id = jobs.enqueue(
-        payload.model_dump(),
+        request_payload,
         runner,
         tracks=list(payload.tracks),
     )
@@ -673,6 +824,111 @@ def create_job_route(payload: JobCreate = Body(...)):
 def list_jobs_route(limit: int = Query(default=50, ge=1, le=200)):
     _ensure_worker_running()
     return {"jobs": [_job_to_dict(j) for j in jobs.list_jobs(limit=limit)]}
+
+
+@router.post("/jobs/{job_id}/remix-plans")
+def create_remix_plan_route(
+    job_id: str,
+    payload: RemixPlanCreate | None = Body(default=None),
+):
+    payload = payload or RemixPlanCreate()
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"job_not_found: {job_id}",
+        )
+    if job.status not in {"done", "partial_success"}:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="job_not_finished",
+        )
+    existing_plans = [
+        plan for plan in (job.artifacts.get("remix_plans") or [])
+        if isinstance(plan, dict)
+    ]
+    if len(existing_plans) >= MAX_REMIX_PLANS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="remix_plan_limit_reached",
+        )
+
+    try:
+        plan_summary = _append_remix_plan(job, payload)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        jobs.log_event(job.id, "ERROR", "remix", f"append_remix_plan_failed: {exc}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"append_remix_plan_failed: {exc}",
+        ) from exc
+
+    updated_plans = [*existing_plans, plan_summary]
+    artifacts = {**job.artifacts, "remix_plans": updated_plans}
+    if updated_plans and not artifacts.get("remix_mp4"):
+        artifacts["remix_mp4"] = updated_plans[0].get("mp4")
+    jobs.update_status(
+        job,
+        stage=f"已生成新成片方案 {plan_summary['index']}",
+        artifacts=artifacts,
+        tracks_result={"remix": "ok"},
+    )
+    jobs.log_event(job.id, "INFO", "remix", f"append remix plan {plan_summary['index']}")
+    refreshed = jobs.get_job(job_id)
+    return _job_to_dict(refreshed or job)
+
+
+@router.get("/jobs/batch-remix-segments.zip")
+def batch_remix_segments_zip_route(ids: str = Query(..., min_length=1)):
+    job_ids = [item.strip() for item in ids.split(",") if item.strip()]
+    if not job_ids:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="job_ids_required",
+        )
+    if len(job_ids) > 50:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="too_many_jobs: max 50",
+        )
+    if any(not re.fullmatch(r"[A-Za-z0-9_\-]+", job_id) for job_id in job_ids):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="invalid_job_id",
+        )
+
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="autocut_batch_remix_",
+        suffix=".zip",
+        delete=False,
+    )
+    tmp_path = Path(tmp.name)
+    tmp.close()
+
+    try:
+        written_jobs = _generate_batch_remix_segments_zip(job_ids, tmp_path)
+    except HTTPException:
+        tmp_path.unlink(missing_ok=True)
+        raise
+    except Exception:
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+    if written_jobs <= 0:
+        tmp_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="no_downloadable_jobs",
+        )
+
+    filename = f"autocut_batch_remix_segments_{int(time.time())}.zip"
+    return FileResponse(
+        tmp_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(lambda: tmp_path.unlink(missing_ok=True)),
+    )
 
 
 @router.get("/jobs/{job_id}")
@@ -775,6 +1031,210 @@ def _maybe_generate_segments_zip(job_id: str, name: str, exports_dir: Path) -> s
             variant_index=int(match.group(1)),
         )
     return None
+
+
+def _append_remix_plan(job: jobs.Job, payload: RemixPlanCreate) -> dict[str, Any]:
+    from .llm import LLMError, generate_ordered_ids
+    from .remix import (
+        build_remix_source,
+        export_remix_plan,
+        remix_plan_from_ordered_ids,
+        write_remix_plan,
+    )
+
+    run_dir = _runs_dir() / job.id
+    result_path = run_dir / "metadata" / "result.json"
+    request_path = run_dir / "metadata" / "request.json"
+    if not result_path.exists() or not request_path.exists():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="remix_missing_metadata",
+        )
+
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    request = json.loads(request_path.read_text(encoding="utf-8"))
+    existing_plans = [
+        plan for plan in (job.artifacts.get("remix_plans") or [])
+        if isinstance(plan, dict)
+    ]
+    used_indices = {
+        int(plan.get("index"))
+        for plan in existing_plans
+        if str(plan.get("index") or "").isdigit()
+    }
+    next_index = next(
+        (index for index in range(1, MAX_REMIX_PLANS + 1) if index not in used_indices),
+        len(existing_plans) + 1,
+    )
+    if next_index > MAX_REMIX_PLANS:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="remix_plan_limit_reached",
+        )
+
+    remix_request = job.request.get("remix") if isinstance(job.request, dict) else {}
+    target_duration = _float_from_request(
+        remix_request.get("target_duration") if isinstance(remix_request, dict) else None,
+        fallback=25.0,
+    )
+    remix_source = build_remix_source(result, request, target_duration=target_duration)
+    seen_orders = {
+        tuple(str(item) for item in plan.get("ordered_ids") or [])
+        for plan in existing_plans
+        if plan.get("ordered_ids")
+    }
+    model_result = generate_ordered_ids(
+        _variant_prompt(remix_source["prompt"], next_index, MAX_REMIX_PLANS, seen_orders),
+        stream=payload.stream,
+        model=payload.model,
+    )
+    ordered_ids = model_result.get("ordered_ids", [])
+    if not ordered_ids:
+        raise LLMError("model response ordered_ids is empty")
+
+    plan = remix_plan_from_ordered_ids(
+        remix_source["units"],
+        ordered_ids,
+        target_duration=target_duration,
+    )
+    if not plan.get("items"):
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="remix_no_items",
+        )
+    plan["model_reason"] = model_result.get("reason", "")
+    plan["model_raw_content"] = model_result.get("raw_content", "")
+    plan["variant_index"] = next_index
+    plan["variant_count"] = MAX_REMIX_PLANS
+    plan["duplicate"] = tuple(str(item) for item in plan.get("ordered_ids") or []) in seen_orders
+    plan["quality"] = score_remix_plan(plan, request, target_duration=target_duration)
+
+    exports_dir = run_dir / "exports"
+    exports_dir.mkdir(parents=True, exist_ok=True)
+    output_path = exports_dir / f"{job.id}_remix_{int(round(target_duration))}s_v{next_index}.mp4"
+    warning = export_remix_plan(result, plan, output_path)
+    if warning:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"remix_export_warning: {warning}",
+        )
+    plan_path = run_dir / "metadata" / f"{output_path.stem}_plan.json"
+    write_remix_plan(plan_path, {**plan, "video_path": str(output_path)})
+    return {
+        "index": next_index,
+        "label": f"方案 {next_index}",
+        "mp4": str(output_path),
+        "plan": str(plan_path),
+        "duration": plan.get("duration"),
+        "script_text": plan.get("script_text", ""),
+        "quality": plan.get("quality", {}),
+        "ordered_ids": plan.get("ordered_ids", []),
+        "duplicate": bool(plan.get("duplicate")),
+    }
+
+
+def _float_from_request(value: Any, *, fallback: float) -> float:
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return fallback
+    return parsed if parsed > 0 else fallback
+
+
+def _job_has_remix_segments(job: jobs.Job) -> bool:
+    if job.status not in {"done", "partial_success"}:
+        return False
+    if job.tracks_result.get("remix") == "failed":
+        return False
+    run_dir = _runs_dir() / job.id
+    if not (run_dir / "metadata" / "result.json").exists():
+        return False
+    return any(_remix_plan_paths(run_dir, job.id, index) for index in range(1, 6))
+
+
+def _generate_batch_remix_segments_zip(job_ids: list[str], output_path: Path) -> int:
+    from . import media
+    from .exporter import _normalize_zip_segments, _segment_entry_name
+
+    output_path.unlink(missing_ok=True)
+    written_jobs = 0
+    used_folders: set[str] = set()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        with zipfile.ZipFile(output_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            for job_id in job_ids:
+                job = jobs.get_job(job_id)
+                if job is None or not _job_has_remix_segments(job):
+                    continue
+                run_dir = _runs_dir() / job_id
+                result_path = run_dir / "metadata" / "result.json"
+                result = json.loads(result_path.read_text(encoding="utf-8"))
+                source_video = Path(result.get("media", {}).get("path") or "").resolve()
+                if not source_video.exists():
+                    continue
+
+                folder = _unique_zip_folder_name(
+                    _safe_zip_folder_name(_job_display_name(job) or job_id),
+                    used_folders,
+                    suffix=job_id[:8],
+                )
+                job_written = False
+                for plan_idx, variant_index in enumerate(_job_remix_variant_indices(run_dir, job_id), 1):
+                    plan_paths = _remix_plan_paths(run_dir, job_id, variant_index)
+                    if not plan_paths:
+                        continue
+                    plan = json.loads(plan_paths[0].read_text(encoding="utf-8"))
+                    segments = _normalize_zip_segments(remix_export_segments(result, plan))
+                    if not segments:
+                        continue
+                    plan_tmp_dir = tmp_root / folder / f"方案{plan_idx}"
+                    plan_tmp_dir.mkdir(parents=True, exist_ok=True)
+                    for segment_index, segment in enumerate(segments, 1):
+                        entry_name = _segment_entry_name(segment_index, segment)
+                        segment_path = plan_tmp_dir / entry_name
+                        warning = media.export_clip(
+                            source_video,
+                            segment_path,
+                            float(segment["start"]),
+                            float(segment["end"]),
+                        )
+                        if warning:
+                            raise HTTPException(
+                                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                                detail=warning,
+                            )
+                        archive.write(segment_path, f"{folder}/方案{plan_idx}/{entry_name}")
+                        job_written = True
+                if job_written:
+                    written_jobs += 1
+
+    return written_jobs
+
+
+def _job_remix_variant_indices(run_dir: Path, job_id: str) -> list[int]:
+    return [
+        index
+        for index in range(1, 6)
+        if _remix_plan_paths(run_dir, job_id, index)
+    ]
+
+
+def _safe_zip_folder_name(value: str) -> str:
+    safe = re.sub(r"[^0-9A-Za-z\u4e00-\u9fff _.-]+", "", value)
+    safe = re.sub(r"\s+", "_", safe).strip("._- ")
+    return (safe or "任务")[:80]
+
+
+def _unique_zip_folder_name(base: str, used: set[str], *, suffix: str) -> str:
+    candidate = f"{base}-{suffix}" if suffix else base
+    original = candidate
+    counter = 2
+    while candidate in used:
+        candidate = f"{original}-{counter}"
+        counter += 1
+    used.add(candidate)
+    return candidate
 
 
 def _variant_prompt(
