@@ -27,7 +27,10 @@ import json
 import os
 import re
 import secrets
+import shutil
+import tempfile
 import time
+import zipfile
 from pathlib import Path
 from typing import Any, Optional
 
@@ -760,6 +763,8 @@ def get_job_artifact_route(job_id: str, name: str):
 def _maybe_generate_segments_zip(job_id: str, name: str, exports_dir: Path) -> str | None:
     if name == f"{job_id}_enabled_segments.zip":
         return _generate_enabled_segments_zip(job_id, exports_dir / name)
+    if name == f"{job_id}_all_plans_segments.zip":
+        return _generate_all_plans_segments_zip(job_id, exports_dir / name)
     if name == f"{job_id}_remix_segments.zip":
         return _generate_remix_segments_zip(job_id, exports_dir / name, variant_index=1)
     match = re.fullmatch(rf"{re.escape(job_id)}_remix_v([1-5])_segments\.zip", name)
@@ -857,6 +862,67 @@ def _remix_plan_paths(run_dir: Path, job_id: str, variant_index: int) -> list[Pa
             reverse=True,
         )
     return []
+
+
+def _generate_all_plans_segments_zip(job_id: str, output_path: Path) -> str | None:
+    """把所有混剪方案的片段合并到一个 ZIP，每个方案放在独立子目录 方案1/ 方案2/ ..."""
+    run_dir = output_path.parent.parent
+    result_path = run_dir / "metadata" / "result.json"
+    if not result_path.exists():
+        return "result.json not found"
+    result = json.loads(result_path.read_text(encoding="utf-8"))
+    source_video = Path(result.get("media", {}).get("path") or "").resolve()
+    if not source_video.exists():
+        return f"source video not found: {source_video}"
+
+    # 收集所有方案的 variant_index（1~5）
+    plan_indices: list[int] = []
+    for i in range(1, 6):
+        if _remix_plan_paths(run_dir, job_id, i):
+            plan_indices.append(i)
+    if not plan_indices:
+        return "no remix plans found"
+
+    temp_zip = output_path.with_suffix(output_path.suffix + ".tmp")
+    temp_zip.unlink(missing_ok=True)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        tmp_root = Path(tmp_dir)
+        try:
+            with zipfile.ZipFile(temp_zip, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+                for plan_idx, variant_index in enumerate(plan_indices, 1):
+                    folder_name = f"方案{plan_idx}"
+                    plan_paths = _remix_plan_paths(run_dir, job_id, variant_index)
+                    if not plan_paths:
+                        continue
+                    plan = json.loads(plan_paths[0].read_text(encoding="utf-8"))
+                    segments = remix_export_segments(result, plan)
+
+                    from .exporter import _normalize_zip_segments, _segment_entry_name
+                    normalized = _normalize_zip_segments(segments)
+                    plan_tmp_dir = tmp_root / folder_name
+                    plan_tmp_dir.mkdir(parents=True, exist_ok=True)
+
+                    from . import media
+                    for index, segment in enumerate(normalized, 1):
+                        entry_name = _segment_entry_name(index, segment)
+                        segment_path = plan_tmp_dir / entry_name
+                        warning = media.export_clip(
+                            source_video,
+                            segment_path,
+                            float(segment["start"]),
+                            float(segment["end"]),
+                        )
+                        if warning:
+                            return warning
+                        archive.write(segment_path, f"{folder_name}/{entry_name}")
+        except Exception:
+            temp_zip.unlink(missing_ok=True)
+            raise
+
+    temp_zip.replace(output_path)
+    return None
 
 
 # ---------- Lifespan hooks（api.py 调用） ----------

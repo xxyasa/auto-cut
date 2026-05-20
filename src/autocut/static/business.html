@@ -168,9 +168,9 @@
                 <div class="progress-bar mb-4"><div class="progress-fill" id="detail-progress" style="width: 0%"></div></div>
 
                 <div class="tabs" id="detail-tabs">
-                    <div class="tab active" data-detail-tab="log">处理过程</div>
+                    <div class="tab active" data-detail-tab="remix">成片预览</div>
                     <div class="tab" data-detail-tab="enabled">初剪轨道</div>
-                    <div class="tab" data-detail-tab="remix">成片预览</div>
+                    <div class="tab" data-detail-tab="log">处理过程</div>
                 </div>
 
                 <div id="detail-log" class="log-view"></div>
@@ -182,6 +182,9 @@
                 </div>
                 
                 <div id="detail-remix" class="hidden flex" style="flex-direction: column; gap: 8px;">
+                    <div id="remix-all-download-wrap" class="hidden">
+                        <a id="link-all-plans-zip" class="btn btn-primary btn-sm text-center" target="_blank" download>全部下载 ZIP（所有方案片段）</a>
+                    </div>
                     <div id="remix-plans-container" class="flex" style="flex-direction: column; gap: 12px;"></div>
                 </div>
             </div>

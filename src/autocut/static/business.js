@@ -553,7 +553,7 @@ const apiOps = {
       },
       tracks: [],
       remix: {},
-      asr_engine: STATE.asrCombo ? STATE.asrCombo.getValue() : 'glm-asr'
+      asr_engine: STATE.asrCombo ? STATE.asrCombo.getValue() : 'whisper-api'
     };
     
     // Source
@@ -720,7 +720,8 @@ function showJobDetail(id) {
   document.getElementById('view-detail').classList.add('flex');
   
   ui.switchTab('#detail-tabs', 'log', 'detail-');
-  
+  STATE.detailTabAutoSelected = false;
+
   // immediate fetch
   fetchJobDetailOnce(id);
   
@@ -785,6 +786,10 @@ function updateDetailView(job) {
   if (remixPlans.length > 0) {
     renderRemixPlans(job.id, remixPlans);
     document.querySelector('.tab[data-detail-tab="remix"]').style.display = 'block';
+    if (!STATE.detailTabAutoSelected) {
+      STATE.detailTabAutoSelected = true;
+      ui.switchTab('#detail-tabs', 'remix', 'detail-');
+    }
   } else {
     document.querySelector('.tab[data-detail-tab="remix"]').style.display = 'none';
   }
@@ -805,6 +810,19 @@ function renderRemixPlans(jobId, plans) {
   const container = document.getElementById('remix-plans-container');
   if (!container) return;
   container.innerHTML = '';
+
+  // 全部下载按钮：有多个方案时才显示
+  const allDownloadWrap = document.getElementById('remix-all-download-wrap');
+  const linkAllPlans = document.getElementById('link-all-plans-zip');
+  if (allDownloadWrap && linkAllPlans) {
+    if (plans.length > 1) {
+      linkAllPlans.href = `/api/business/jobs/${jobId}/artifacts/${jobId}_all_plans_segments.zip`;
+      allDownloadWrap.classList.remove('hidden');
+    } else {
+      allDownloadWrap.classList.add('hidden');
+    }
+  }
+
   plans.forEach((plan, idx) => {
     const mp4 = plan.mp4 || plan.video_path || '';
     const fn = utils.getFilename(mp4);
@@ -1058,8 +1076,7 @@ function init() {
       document.getElementById('transcript-path-wrap').classList.toggle('hidden', value !== 'transcript');
     },
   });
-  STATE.asrCombo.setValue('glm-asr');
-  // glm-asr 不显示 transcript-path
+  STATE.asrCombo.setValue('whisper-api');
   document.getElementById('transcript-path-wrap').classList.add('hidden');
 
   bindEvents();
