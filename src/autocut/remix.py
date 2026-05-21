@@ -101,6 +101,27 @@ OTHER_PRODUCT_PATTERNS = [
     "不是这款",
     "不是这个",
     "拍那个",
+    "去拍",
+]
+
+PRODUCT_CATEGORY_TERMS = [
+    "雨伞",
+    "伞",
+    "透明伞",
+    "手机包",
+    "包款",
+    "包包",
+    "包",
+    "项链",
+    "鞋",
+    "衣服",
+    "外套",
+    "裤子",
+    "裙子",
+    "帽子",
+    "杯子",
+    "水杯",
+    "礼盒",
 ]
 
 HOOK_PATTERNS = [
@@ -263,7 +284,7 @@ def build_script_units(
     brand_terms: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     product_terms = _product_terms(product, [*(selling_points or []), *(brand_terms or [])])
-    target_terms = _target_product_terms(product, [*(selling_points or []), *(brand_terms or [])])
+    target_terms = _target_product_terms(product)
     units: list[dict[str, Any]] = []
     for index, segment in enumerate(result.get("transcript", []), 1):
         try:
@@ -683,7 +704,7 @@ def score_remix_plan(
     product = str(request.get("product") or "")
     selling_points = _text_list(request.get("selling_points"))
     brand_terms = _text_list(request.get("brand_terms"))
-    target_terms = _target_product_terms(product, [*selling_points, *brand_terms])
+    target_terms = _target_product_terms(product)
     risks: list[dict[str, Any]] = []
 
     def add_risk(kind: str, label: str, severity: str, message: str, penalty: int) -> None:
