@@ -7,6 +7,7 @@ const API_BASE = '/api/business';
 const STORAGE_KEYS = {
   remixDuration: 'autocut_remix_duration',
   remixPlanCount: 'autocut_remix_plan_count',
+  remixPlanCountAuto: 'autocut_remix_plan_count_auto',
 };
 const MAX_TAGS = 200;
 const STATE = {
@@ -717,6 +718,7 @@ const apiOps = {
         target_duration: parseFloat(document.getElementById('remix-duration').value),
         use_llm: document.getElementById('remix-use-llm').checked,
         plan_count: Math.min(5, Math.max(1, parseInt(document.getElementById('remix-plan-count').value || '1', 10))),
+        plan_count_auto: document.getElementById('remix-plan-count-auto').checked,
         stream: false
       };
     }
@@ -1279,6 +1281,10 @@ function bindEvents() {
     e.target.value = value;
     localStorage.setItem(STORAGE_KEYS.remixPlanCount, String(value));
   });
+  document.getElementById('remix-plan-count-auto').addEventListener('change', e => {
+    localStorage.setItem(STORAGE_KEYS.remixPlanCountAuto, e.target.checked ? '1' : '0');
+    updateRemixPlanCountMode();
+  });
   
   // Product Mode Toggle
   document.querySelectorAll('input[name="product-mode"]').forEach(r => {
@@ -1497,6 +1503,7 @@ function init() {
 function restoreRemixSettings() {
   const durationInput = document.getElementById('remix-duration');
   const planCountInput = document.getElementById('remix-plan-count');
+  const planCountAutoInput = document.getElementById('remix-plan-count-auto');
   const storedDuration = parseFloat(localStorage.getItem(STORAGE_KEYS.remixDuration) || '');
   if (Number.isFinite(storedDuration)) {
     durationInput.value = Math.min(60, Math.max(5, storedDuration));
@@ -1505,6 +1512,15 @@ function restoreRemixSettings() {
   if (Number.isFinite(storedPlanCount)) {
     planCountInput.value = Math.min(5, Math.max(1, storedPlanCount));
   }
+  planCountAutoInput.checked = localStorage.getItem(STORAGE_KEYS.remixPlanCountAuto) !== '0';
+  updateRemixPlanCountMode();
+}
+
+function updateRemixPlanCountMode() {
+  const autoInput = document.getElementById('remix-plan-count-auto');
+  const planCountInput = document.getElementById('remix-plan-count');
+  if (!autoInput || !planCountInput) return;
+  planCountInput.disabled = autoInput.checked;
 }
 
 document.addEventListener('DOMContentLoaded', init);

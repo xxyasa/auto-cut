@@ -188,6 +188,7 @@ docker compose up -d --build
 | `AUTOCUT_ASR_API_URL` | 否 | 远端 Whisper/OpenAI 兼容转写接口 |
 | `AUTOCUT_ASR_API_KEY` | 否 | 远端 ASR API Key；不填时回退用 `AUTOCUT_LLM_API_KEY` |
 | `AUTOCUT_ASR_UPLOAD_FORMAT` | 否 | 远端 ASR 上传格式，默认 `wav`；可设 `mp3` / `source` |
+| `AUTOCUT_EXPORT_AUDIO_GAIN_DB` | 否 | 导出 MP4 音量增益，默认 `20` dB；设 `0` 可关闭 |
 
 ### 本地模型挂载
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -12,6 +13,10 @@ from .models import MediaInfo
 
 class MediaToolError(RuntimeError):
     pass
+
+
+DEFAULT_EXPORT_AUDIO_GAIN_DB = 20.0
+ENV_EXPORT_AUDIO_GAIN_DB = "AUTOCUT_EXPORT_AUDIO_GAIN_DB"
 
 
 def has_binary(name: str) -> bool:
@@ -33,6 +38,17 @@ def executable(name: str) -> str | None:
 
 def run_command(args: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(args, capture_output=True, text=True, check=False)
+
+
+def export_audio_filter_args() -> list[str]:
+    raw = os.environ.get(ENV_EXPORT_AUDIO_GAIN_DB, str(DEFAULT_EXPORT_AUDIO_GAIN_DB)).strip()
+    try:
+        gain_db = float(raw)
+    except ValueError:
+        gain_db = DEFAULT_EXPORT_AUDIO_GAIN_DB
+    if gain_db == 0:
+        return []
+    return ["-filter:a", f"volume={gain_db:g}dB"]
 
 
 def probe_video(video_path: Path) -> MediaInfo:
@@ -149,6 +165,7 @@ def export_clip(video_path: Path, output_path: Path, start: float, end: float) -
             "veryfast",
             "-crf",
             "20",
+            *export_audio_filter_args(),
             "-c:a",
             "aac",
             "-b:a",

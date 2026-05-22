@@ -283,8 +283,9 @@ def build_script_units(
     selling_points: list[str] | None = None,
     brand_terms: list[str] | None = None,
 ) -> list[dict[str, Any]]:
-    product_terms = _product_terms(product, [*(selling_points or []), *(brand_terms or [])])
-    target_terms = _target_product_terms(product)
+    supporting_terms = [*(selling_points or []), *(brand_terms or [])]
+    product_terms = _product_terms(product, supporting_terms)
+    target_terms = _target_product_terms(product, supporting_terms)
     units: list[dict[str, Any]] = []
     for index, segment in enumerate(result.get("transcript", []), 1):
         try:
@@ -704,7 +705,7 @@ def score_remix_plan(
     product = str(request.get("product") or "")
     selling_points = _text_list(request.get("selling_points"))
     brand_terms = _text_list(request.get("brand_terms"))
-    target_terms = _target_product_terms(product)
+    target_terms = _target_product_terms(product, [*selling_points, *brand_terms])
     risks: list[dict[str, Any]] = []
 
     def add_risk(kind: str, label: str, severity: str, message: str, penalty: int) -> None:

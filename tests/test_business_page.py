@@ -15,6 +15,8 @@ class TestBusinessPage(unittest.TestCase):
         self.assertIn("混剪方案数", response.text)
         self.assertIn('id="remix-duration" value="30"', response.text)
         self.assertIn('id="remix-plan-count" value="2"', response.text)
+        self.assertIn('id="remix-plan-count-auto" checked', response.text)
+        self.assertIn("自动按素材时长生成方案数", response.text)
         self.assertIn("处理过程", response.text)
         self.assertIn("初剪轨道", response.text)
         self.assertIn("成片预览", response.text)
@@ -34,8 +36,9 @@ class TestBusinessPage(unittest.TestCase):
         self.assertTrue("javascript" in response.headers["content-type"].lower())
         self.assertIn("API_BASE", response.text)
         self.assertIn("plan_count", response.text)
+        self.assertIn("plan_count_auto", response.text)
         self.assertIn("remix_plans", response.text)
-        self.assertIn("setValue('glm-asr')", response.text)
+        self.assertIn("setValue('whisper-api')", response.text)
         self.assertIn("glm-asr (默认，高精度)", response.text)
 
 if __name__ == '__main__':

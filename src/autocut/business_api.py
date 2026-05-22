@@ -53,12 +53,31 @@ except ImportError as exc:  # pragma: no cover
         "Install API dependencies with: pip install -e '.[api]'"
     ) from exc
 
-from . import brand_repo, jobs, oss
+from . import brand_repo, jobs, media, oss
 from .auth import require_token
 from .exporter import export_segments_zip
 from .remix import remix_export_segments, score_remix_plan
 
 MAX_REMIX_PLANS = 5
+
+
+class RemixTrackError(RuntimeError):
+    """Raised when the optional remix track fails after the main track ran."""
+
+
+def _auto_remix_plan_count(video_path: Path) -> tuple[int, float | None]:
+    """Return automatic remix plan count from source duration."""
+    try:
+        duration = media.probe_video(video_path).duration
+    except Exception:
+        return 1, None
+    if duration is None:
+        return 1, None
+    if duration <= 4 * 60:
+        return 1, duration
+    if duration <= 6 * 60:
+        return 2, duration
+    return 3, duration
 
 
 # ---------- Pydantic 模型 ----------
@@ -360,6 +379,7 @@ class RemixSpec(BaseModel):
     stream: bool = False
     model: Optional[str] = None
     plan_count: int = Field(default=1, ge=1, le=5)
+    plan_count_auto: bool = False
 
 
 class JobCreate(BaseModel):
@@ -539,7 +559,33 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                 exports_dir.mkdir(parents=True, exist_ok=True)
                 remix_plans: list[dict[str, Any]] = []
                 seen_orders: set[tuple[str, ...]] = set()
-                plan_count = min(MAX_REMIX_PLANS, payload.remix.plan_count) if payload.remix.use_llm else 1
+                source_duration: float | None = None
+                if payload.remix.use_llm and payload.remix.plan_count_auto:
+                    plan_count, source_duration = _auto_remix_plan_count(video_path)
+                    jobs.log_event(
+                        job.id,
+                        "INFO",
+                        "remix",
+                        f"auto_plan_count={plan_count}"
+                        + (
+                            f" source_duration={source_duration:.1f}s"
+                            if source_duration is not None
+                            else " source_duration=unknown"
+                        ),
+                    )
+                else:
+                    plan_count = (
+                        min(MAX_REMIX_PLANS, payload.remix.plan_count)
+                        if payload.remix.use_llm
+                        else 1
+                    )
+                artifacts["remix_plan_count"] = plan_count
+                artifacts["remix_plan_count_auto"] = bool(
+                    payload.remix.use_llm and payload.remix.plan_count_auto
+                )
+                if source_duration is not None:
+                    artifacts["source_duration"] = round(source_duration, 3)
+                jobs.update_status(job, artifacts=artifacts)
                 for plan_index in range(1, plan_count + 1):
                     jobs.update_status(
                         job,
@@ -628,10 +674,7 @@ def _make_runner(payload: JobCreate, runs_root: Path):
                 # 让 jobs._classify_failure 通过模块名识别为 remix
                 exc_t, exc_v, _ = __import__("sys").exc_info()
                 if exc_t is not None:
-                    # 包一层 RuntimeError 但保留 __module__ 提示
-                    new_exc = RuntimeError(f"remix_failed: {exc_v}")
-                    new_exc.__class__.__module__ = "autocut.remix"
-                    raise new_exc from exc_v
+                    raise RemixTrackError(f"remix_failed: {exc_v}") from exc_v
                 raise
 
         jobs.update_status(

@@ -118,6 +118,35 @@ class RemixTests(unittest.TestCase):
         self.assertEqual(units[0]["exclude_reason"], "其他链接/非主品")
         self.assertFalse(units[1]["excluded"])
 
+    def test_brand_terms_are_valid_target_terms_without_product_name(self):
+        result = {
+            "transcript": [
+                {"start": 0.0, "end": 3.0, "text": "这把哈利波特学院伞图案非常精致"},
+            ]
+        }
+
+        source = build_remix_source(
+            result,
+            {
+                "product": "",
+                "selling_points": [],
+                "brand_terms": ["哈利波特", "学院伞"],
+            },
+            target_duration=15,
+        )
+        quality = score_remix_plan(
+            source["default_plan"],
+            {
+                "product": "",
+                "selling_points": [],
+                "brand_terms": ["哈利波特", "学院伞"],
+            },
+            target_duration=15,
+        )
+
+        self.assertFalse(source["units"][0]["excluded"])
+        self.assertNotIn("未出现目标商品", [risk["label"] for risk in quality["risks"]])
+
     def test_scores_risky_remix_plan_with_actionable_labels(self):
         plan = {
             "target_duration": 25,

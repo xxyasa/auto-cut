@@ -16,6 +16,7 @@ from unittest.mock import patch
 from fastapi.testclient import TestClient
 
 from autocut import brand_repo, business_api, jobs
+from autocut.models import MediaInfo
 
 
 VALID_TOKEN = "tokentokentokentoken1234"
@@ -133,6 +134,46 @@ class JobsCreateTests(_Base):
         )
 
         self.assertEqual(resp.status_code, 422)
+
+    def test_auto_plan_count_payload_is_accepted(self):
+        src = Path(self.uploads_dir) / "u.mp4"
+        src.parent.mkdir(parents=True, exist_ok=True)
+        src.write_bytes(b"FAKE")
+
+        resp = self.client.post(
+            "/api/business/jobs",
+            json={
+                "source": {"type": "upload", "uploaded_path": str(src)},
+                "brand_product": {"product": "测试产品", "selling_points": ["卖点"]},
+                "tracks": ["remix"],
+                "remix": {"use_llm": True, "plan_count_auto": True},
+            },
+            headers=self.headers,
+        )
+
+        self.assertEqual(resp.status_code, 201, resp.text)
+        job = jobs.get_job(resp.json()["id"])
+        self.assertTrue(job.request["remix"]["plan_count_auto"])
+
+    def test_auto_plan_count_thresholds(self):
+        cases = [
+            (60.0, 1),
+            (240.0, 1),
+            (241.0, 2),
+            (360.0, 2),
+            (361.0, 3),
+            (900.0, 3),
+        ]
+
+        for duration, expected in cases:
+            with self.subTest(duration=duration):
+                with patch(
+                    "autocut.business_api.media.probe_video",
+                    return_value=MediaInfo(path=Path("x.mp4"), duration=duration),
+                ):
+                    count, actual_duration = business_api._auto_remix_plan_count(Path("x.mp4"))
+                self.assertEqual(count, expected)
+                self.assertEqual(actual_duration, duration)
 
 
 class JobsExecutionTests(_Base):
