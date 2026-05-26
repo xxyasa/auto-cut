@@ -22,6 +22,7 @@ const STATE = {
   selectedJobIds: new Set(),
   expandedChipContainers: new Set(),
   batchDownloading: false,
+  batchDeleting: false,
   generatingRemixPlan: false,
   uploadedFile: null,     // 单文件兼容（非 upload tab 用）
   uploadedFiles: [],      // 批量上传文件列表
@@ -76,6 +77,9 @@ const utils = {
         ui.toast('Token 无效或已过期，请重新输入', 'error');
         document.getElementById('api-token').focus();
         return null;
+      }
+      if (response.status === 204 || response.status === 205) {
+        return true;
       }
       
       let data = null;
@@ -799,7 +803,7 @@ function syncSelectedJobsWithLatestData() {
   const byId = new Map(STATE.jobs.map(job => [job.id, job]));
   for (const jobId of Array.from(STATE.selectedJobIds)) {
     const job = byId.get(jobId);
-    if (!job || !utils.isJobDownloadable(job)) {
+    if (!job) {
       STATE.selectedJobIds.delete(jobId);
     }
   }
@@ -861,6 +865,7 @@ function renderJobList() {
     emptyState.textContent = '还没有任务，去左侧创建一个吧';
     emptyState.classList.remove('hidden');
     updateBatchDownloadButton();
+    updateDeleteSelectedButton();
     return;
   }
   if (jobs.length === 0) {
@@ -868,6 +873,7 @@ function renderJobList() {
     emptyState.textContent = '没有符合筛选条件的任务';
     emptyState.classList.remove('hidden');
     updateBatchDownloadButton();
+    updateDeleteSelectedButton();
     return;
   }
 
@@ -875,17 +881,16 @@ function renderJobList() {
   const totalJobs = jobs.length;
   const frag = document.createDocumentFragment();
   jobs.forEach((job, idx) => {
-    const downloadable = utils.isJobDownloadable(job);
     const checked = STATE.selectedJobIds.has(job.id);
     const el = document.createElement('div');
-    el.className = `job-item${downloadable ? '' : ' job-item-disabled-select'}`;
+    el.className = 'job-item';
 
     const seq = String(totalJobs - idx).padStart(3, '0');
     const taskName = utils.formatTaskName(job.queued_at || job.updated_at, seq, job.display_name || '');
     const planSummary = utils.jobPlanSummary(job);
     el.innerHTML = `
-      <label class="job-select" title="${downloadable ? '选择用于批量下载' : '仅已完成且有成片方案的任务可批量下载'}">
-        <input type="checkbox" data-job-select="${utils.escapeHtml(job.id)}" ${checked ? 'checked' : ''} ${downloadable ? '' : 'disabled'}>
+      <label class="job-select" title="选择任务">
+        <input type="checkbox" data-job-select="${utils.escapeHtml(job.id)}" ${checked ? 'checked' : ''}>
       </label>
       <div class="job-open-area" role="button" tabindex="0">
         <div class="job-info">
@@ -913,6 +918,7 @@ function renderJobList() {
         STATE.selectedJobIds.delete(job.id);
       }
       updateBatchDownloadButton();
+      updateDeleteSelectedButton();
     });
     openArea.addEventListener('click', () => showJobDetail(job.id));
     openArea.addEventListener('keydown', event => {
@@ -925,22 +931,39 @@ function renderJobList() {
   });
   container.replaceChildren(frag);
   updateBatchDownloadButton();
+  updateDeleteSelectedButton();
 }
 
 function visibleDownloadableJobs() {
   return filteredJobs().filter(utils.isJobDownloadable);
 }
 
+function selectedDownloadableJobIds() {
+  const byId = new Map(STATE.jobs.map(job => [job.id, job]));
+  return Array.from(STATE.selectedJobIds).filter(jobId => {
+    const job = byId.get(jobId);
+    return job && utils.isJobDownloadable(job);
+  });
+}
+
 function updateBatchDownloadButton() {
   const btn = document.getElementById('btn-batch-download-jobs');
   if (!btn) return;
-  const count = STATE.selectedJobIds.size;
+  const count = selectedDownloadableJobIds().length;
   btn.textContent = STATE.batchDownloading ? `正在打包 (${count})...` : `批量下载 (${count})`;
-  btn.disabled = count === 0 || STATE.batchDownloading;
+  btn.disabled = count === 0 || STATE.batchDownloading || STATE.batchDeleting;
+}
+
+function updateDeleteSelectedButton() {
+  const btn = document.getElementById('btn-delete-selected-jobs');
+  if (!btn) return;
+  const count = STATE.selectedJobIds.size;
+  btn.textContent = STATE.batchDeleting ? `正在删除 (${count})...` : `删除所选 (${count})`;
+  btn.disabled = count === 0 || STATE.batchDeleting || STATE.batchDownloading;
 }
 
 function selectVisibleJobs() {
-  visibleDownloadableJobs().forEach(job => STATE.selectedJobIds.add(job.id));
+  filteredJobs().forEach(job => STATE.selectedJobIds.add(job.id));
   renderJobList();
 }
 
@@ -950,7 +973,7 @@ function clearSelectedJobs() {
 }
 
 async function batchDownloadSelectedJobs() {
-  const ids = Array.from(STATE.selectedJobIds);
+  const ids = selectedDownloadableJobIds();
   if (ids.length === 0 || STATE.batchDownloading) return;
   const url = `${API_BASE}/jobs/batch-remix-segments.zip?ids=${encodeURIComponent(ids.join(','))}`;
   STATE.batchDownloading = true;
@@ -986,6 +1009,35 @@ async function batchDownloadSelectedJobs() {
   } finally {
     STATE.batchDownloading = false;
     updateBatchDownloadButton();
+    updateDeleteSelectedButton();
+  }
+}
+
+async function deleteSelectedJobs() {
+  const ids = Array.from(STATE.selectedJobIds);
+  if (ids.length === 0 || STATE.batchDeleting) return;
+  const ok = window.confirm(`确认删除 ${ids.length} 个任务？会同时删除任务记录、运行目录和上传源视频文件。此操作不可撤销。`);
+  if (!ok) return;
+
+  STATE.batchDeleting = true;
+  updateBatchDownloadButton();
+  updateDeleteSelectedButton();
+  let deleted = 0;
+  try {
+    for (const id of ids) {
+      const res = await utils.fetchApi(`/jobs/${encodeURIComponent(id)}`, { method: 'DELETE' });
+      if (res !== null) {
+        deleted += 1;
+        STATE.selectedJobIds.delete(id);
+      }
+    }
+    ui.toast(`已删除 ${deleted}/${ids.length} 个任务`, deleted === ids.length ? 'success' : 'warning');
+    STATE.lastJobsSignature = '';
+    await apiOps.pollJobs();
+  } finally {
+    STATE.batchDeleting = false;
+    updateBatchDownloadButton();
+    updateDeleteSelectedButton();
   }
 }
 
@@ -1269,10 +1321,11 @@ function bindEvents() {
   document.getElementById('btn-select-visible-jobs').addEventListener('click', selectVisibleJobs);
   document.getElementById('btn-clear-selected-jobs').addEventListener('click', clearSelectedJobs);
   document.getElementById('btn-batch-download-jobs').addEventListener('click', batchDownloadSelectedJobs);
+  document.getElementById('btn-delete-selected-jobs').addEventListener('click', deleteSelectedJobs);
   document.getElementById('btn-generate-remix-plan').addEventListener('click', generateRemixPlan);
 
   document.getElementById('remix-duration').addEventListener('change', e => {
-    const value = Math.min(60, Math.max(5, parseFloat(e.target.value || '30')));
+    const value = Math.min(60, Math.max(5, parseFloat(e.target.value || '50')));
     e.target.value = value;
     localStorage.setItem(STORAGE_KEYS.remixDuration, String(value));
   });

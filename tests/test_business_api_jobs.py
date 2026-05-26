@@ -287,6 +287,57 @@ class JobsListAndLogTests(_Base):
         self.assertGreaterEqual(len(lines), 1)
         self.assertTrue(any("hello world" in line for line in lines))
 
+    def test_delete_job_removes_job_run_and_uploaded_file(self):
+        uploaded = self.uploads_dir / "source_uploaded.mp4"
+        uploaded.parent.mkdir(parents=True, exist_ok=True)
+        uploaded.write_bytes(b"video")
+
+        def runner(job):
+            run_dir = self.runs_dir / job.id
+            run_dir.mkdir(parents=True, exist_ok=True)
+            (run_dir / "artifact.txt").write_text("ok", encoding="utf-8")
+            jobs.update_status(
+                job,
+                artifacts={
+                    "source_path": str(uploaded),
+                    "run_dir": str(run_dir),
+                },
+            )
+            return {}
+
+        job_id = jobs.enqueue(
+            {
+                "source": {
+                    "type": "upload",
+                    "uploaded_path": str(uploaded),
+                }
+            },
+            runner,
+            tracks=["enabled"],
+        )
+        jobs._execute_job(job_id, runner)
+        self.assertTrue((self.jobs_dir / job_id / "job.json").exists())
+        self.assertTrue((self.runs_dir / job_id).exists())
+        self.assertTrue(uploaded.exists())
+
+        resp = self.client.delete(f"/api/business/jobs/{job_id}", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 204, resp.text)
+        self.assertFalse((self.jobs_dir / job_id).exists())
+        self.assertFalse((self.runs_dir / job_id).exists())
+        self.assertFalse(uploaded.exists())
+
+    def test_delete_non_terminal_job_conflicts(self):
+        def runner(job):
+            return {}
+
+        job_id = jobs.enqueue({}, runner, tracks=["enabled"])
+
+        resp = self.client.delete(f"/api/business/jobs/{job_id}", headers=self.headers)
+
+        self.assertEqual(resp.status_code, 409)
+        self.assertTrue((self.jobs_dir / job_id / "job.json").exists())
+
 
 class ArtifactRouteTests(_Base):
     def test_remix_variant_zip_uses_matching_plan(self):

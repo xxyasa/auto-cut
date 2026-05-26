@@ -374,7 +374,7 @@ class BrandProductSpec(BaseModel):
 
 
 class RemixSpec(BaseModel):
-    target_duration: float = 25.0
+    target_duration: float = 50.0
     use_llm: bool = True
     stream: bool = False
     model: Optional[str] = None
@@ -840,6 +840,33 @@ def _remix_plan_script_text(plan: dict[str, Any]) -> str:
     return ""
 
 
+def _delete_job_files(job: jobs.Job) -> None:
+    run_dir = (_runs_dir() / job.id).resolve()
+    _remove_path_under(run_dir, _runs_dir())
+
+    source = job.request.get("source") if isinstance(job.request, dict) else {}
+    if isinstance(source, dict):
+        for key in ("uploaded_path",):
+            value = source.get(key)
+            if value:
+                _remove_path_under(Path(str(value)).resolve(), _upload_dir())
+    source_path = job.artifacts.get("source_path") if isinstance(job.artifacts, dict) else None
+    if source_path:
+        _remove_path_under(Path(str(source_path)).resolve(), _upload_dir())
+
+
+def _remove_path_under(path: Path, root: Path) -> None:
+    root = root.resolve()
+    try:
+        path.relative_to(root)
+    except ValueError:
+        return
+    if path.is_dir():
+        shutil.rmtree(path, ignore_errors=True)
+    elif path.exists():
+        path.unlink(missing_ok=True)
+
+
 @router.post("/jobs", status_code=status.HTTP_201_CREATED)
 def create_job_route(payload: JobCreate = Body(...)):
     _ensure_worker_running()
@@ -867,6 +894,24 @@ def create_job_route(payload: JobCreate = Body(...)):
 def list_jobs_route(limit: int = Query(default=50, ge=1, le=200)):
     _ensure_worker_running()
     return {"jobs": [_job_to_dict(j) for j in jobs.list_jobs(limit=limit)]}
+
+
+@router.delete("/jobs/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+def delete_job_route(job_id: str):
+    job = jobs.get_job(job_id)
+    if job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"job_not_found: {job_id}",
+        )
+    if job.status not in jobs.TERMINAL_STATUSES:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="job_not_terminal",
+        )
+    _delete_job_files(job)
+    jobs.delete_job(job_id)
+    return None
 
 
 @router.post("/jobs/{job_id}/remix-plans")

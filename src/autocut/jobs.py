@@ -23,6 +23,7 @@ import logging
 import os
 import queue
 import secrets
+import shutil
 import tempfile
 import threading
 import time
@@ -246,6 +247,20 @@ def list_jobs(limit: int = 50) -> list[Job]:
         if job is not None:
             out.append(job)
     return out
+
+
+def delete_job(job_id: str) -> bool:
+    """Delete persisted job metadata/log directory."""
+    job_dir = _job_dir(job_id).resolve()
+    try:
+        job_dir.relative_to(_jobs_root())
+    except ValueError:
+        return False
+    if not job_dir.exists():
+        return False
+    with _JOB_FILE_LOCKS[job_id]:
+        shutil.rmtree(job_dir, ignore_errors=False)
+    return True
 
 
 # ---------- 入队 / Worker ----------
